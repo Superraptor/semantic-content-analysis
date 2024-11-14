@@ -44,7 +44,7 @@ emotion_model = Wav2Vec2ForSequenceClassification.from_pretrained("superb/wav2ve
 print('Loading emotion processor...')
 emotion_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h")
 print('Loading speaker diarization pipeline...')
-pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization", use_auth_token="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")
+pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization", use_auth_token="TOADD")
 print('Running script...')
 
 def main():

@@ -1,0 +1,11 @@
+ffmpeg~=1.4
+librosa~=0.10.2.post1
+nltk~=3.9.1
+pyannote-audio~=3.3.2
+pydub~=0.25.1
+python-certifi-win32~=1.6.1
+scipy~=1.13.1
+textblob~=0.18.0.post0
+torch~=2.5.0
+transformers~=4.46.1
+vosk~=0.3.45

@@ -12,8 +12,6 @@
 #nltk.download('stopwords')
 
 from collections import Counter
-from nltk.corpus import stopwords
-from nltk.tokenize import sent_tokenize, word_tokenize
 from scipy.spatial.distance import cosine
 from textblob import TextBlob
 from transformers import AutoTokenizer, AutoModel
@@ -22,7 +20,42 @@ import argparse
 import textwrap
 import torch
 
-stop_words = set(stopwords.words("english"))
+# Import NLTK with error handling
+try:
+    from nltk.corpus import stopwords
+    from nltk.tokenize import sent_tokenize, word_tokenize
+    import nltk
+    
+    # Try to load stopwords, download if not available
+    try:
+        stop_words = set(stopwords.words("english"))
+    except LookupError:
+        print("Downloading NLTK stopwords...")
+        nltk.download('stopwords')
+        stop_words = set(stopwords.words("english"))
+        
+    # Try to load punkt, download if not available  
+    try:
+        sent_tokenize("test")
+    except LookupError:
+        print("Downloading NLTK punkt...")
+        nltk.download('punkt')
+        nltk.download('punkt_tab')
+        
+except ImportError:
+    print("Warning: NLTK not available, using basic tokenization")
+    stop_words = set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'])
+    
+    # Fallback tokenization functions
+    def sent_tokenize(text):
+        import re
+        sentences = re.split(r'[.!?]+', text)
+        return [s.strip() for s in sentences if s.strip()]
+    
+    def word_tokenize(text):
+        import re
+        words = re.findall(r'\b\w+\b', text.lower())
+        return words
 
 def main():
 

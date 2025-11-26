@@ -72,8 +72,29 @@ def main():
         file2_content = f2.read()
 
     if (file1_content is not None) and (file2_content is not None):
-        tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-        model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+        # Attempt to load model from local cache first
+        try:
+            print("Loading similarity model from cache...")
+            tokenizer = AutoTokenizer.from_pretrained(
+                "sentence-transformers/all-MiniLM-L6-v2",
+                local_files_only=True
+            )
+            model = AutoModel.from_pretrained(
+                "sentence-transformers/all-MiniLM-L6-v2",
+                local_files_only=True
+            )
+            print("SUCCESS: Loaded similarity model from cache")
+        except Exception as e:
+            # Cache load failed, attempt to download
+            print(f"Warning: Could not load from cache ({e}), attempting download...")
+            try:
+                tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+                model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+                print("SUCCESS: Downloaded and loaded similarity model")
+            except Exception as e2:
+                print(f"ERROR: Could not load similarity model: {e2}")
+                raise
+
         similarity_score = calculate_similarity(file1_content, file2_content, tokenizer, model)
         print("The obtained similarity score between the content in File 1 (%s) and File 2 (%s) is %s." % (str(args.file1), str(args.file2), str(similarity_score)))
         

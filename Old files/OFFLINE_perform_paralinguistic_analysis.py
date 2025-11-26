@@ -4,30 +4,120 @@
 #   Clair Kronk
 #   29 October 2024
 #   OFFLINE_perform_paralinguistic_analysis.py
-#   
+#
 #   OFFLINE VERSION - Works without downloading Hugging Face models
 #   Uses dummy ML models for testing optimizations while SSL issues are resolved
 #
 
-# Import with error handling
+# ============================================================================
+# OFFLINE ANALYSIS FUNCTIONS (Always Available)
+# ============================================================================
+
+def keyword_overlap_offline(text1, text2):
+    """Offline keyword overlap function using simple word-based overlap"""
+    words1 = set(text1.lower().split())
+    words2 = set(text2.lower().split())
+    if not words1 or not words2:
+        return 0.0
+    overlap = len(words1.intersection(words2))
+    return overlap / max(len(words1), len(words2))
+
+def calculate_similarity_offline(text1, text2):
+    """Offline similarity function using Jaccard similarity"""
+    words1 = set(text1.lower().split())
+    words2 = set(text2.lower().split())
+    if not words1 or not words2:
+        return 0.0
+    intersection = len(words1.intersection(words2))
+    union = len(words1.union(words2))
+    return intersection / union if union > 0 else 0.0
+
+def analyze_sentiment_offline(text1, text2):
+    """Offline sentiment function - returns neutral scores"""
+    return {
+        'text1_sentiment': 3.0,
+        'text2_sentiment': 3.0,
+        'sentiment_difference': 0.0
+    }
+
+# ============================================================================
+# HUGGINGFACE IMPORTS (Optional - for enhanced analysis)
+# ============================================================================
+
+# Try to import HuggingFace-based functions
 try:
-    from compare_content import keyword_overlap
-    KEYWORD_OVERLAP_AVAILABLE = True
+    from compare_content import keyword_overlap as keyword_overlap_hf
+    from compare_content import calculate_similarity as calculate_similarity_hf
+    KEYWORD_OVERLAP_HF_AVAILABLE = True
+    SIMILARITY_HF_AVAILABLE = True
 except ImportError as e:
-    print(f"Warning: Could not import keyword_overlap module: {e}")
-    print("Info: Using built-in fallback keyword overlap function")
-    KEYWORD_OVERLAP_AVAILABLE = False
-    
-    # Fallback function
-    def keyword_overlap(text1, text2):
-        """Fallback keyword overlap function"""
-        # Simple word-based overlap
-        words1 = set(text1.lower().split())
-        words2 = set(text2.lower().split())
-        if not words1 or not words2:
-            return 0.0
-        overlap = len(words1.intersection(words2))
-        return overlap / max(len(words1), len(words2))
+    print(f"Warning: Could not import compare_content module: {e}")
+    print("Info: Using offline keyword overlap and similarity functions")
+    keyword_overlap_hf = None
+    calculate_similarity_hf = None
+    KEYWORD_OVERLAP_HF_AVAILABLE = False
+    SIMILARITY_HF_AVAILABLE = False
+
+try:
+    from compare_sentiment import analyze_sentiment_texts as analyze_sentiment_hf
+    SENTIMENT_HF_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Could not import sentiment analysis module: {e}")
+    print("Info: Using offline sentiment function")
+    analyze_sentiment_hf = None
+    SENTIMENT_HF_AVAILABLE = False
+
+# ============================================================================
+# EMOTION RECOGNITION MODEL IMPORTS (Optional - for enhanced analysis)
+# ============================================================================
+
+# Try to import HuggingFace Wav2Vec2 emotion recognition model
+try:
+    from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
+    import torch
+
+    # Attempt to load emotion model from cache
+    print("Attempting to load emotion recognition model from cache...")
+    emotion_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+        "superb/wav2vec2-large-superb-er",
+        local_files_only=True
+    )
+    emotion_model = Wav2Vec2ForSequenceClassification.from_pretrained(
+        "superb/wav2vec2-large-superb-er",
+        local_files_only=True
+    )
+    emotion_model.eval()  # Set to evaluation mode
+    EMOTION_HF_AVAILABLE = True
+    print("SUCCESS: Loaded emotion recognition model from cache")
+except Exception as e:
+    print(f"Info: HuggingFace emotion model not available ({e})")
+    print("Info: Will use offline heuristic-based emotion detection")
+    emotion_feature_extractor = None
+    emotion_model = None
+    EMOTION_HF_AVAILABLE = False
+
+# ============================================================================
+# SPEAKER DIARIZATION MODEL IMPORTS (Optional - for enhanced analysis)
+# ============================================================================
+
+# Try to import pyannote.audio speaker diarization pipeline
+try:
+    from pyannote.audio import Pipeline
+
+    # Attempt to load speaker diarization model from cache
+    print("Attempting to load speaker diarization model from cache...")
+    diarization_pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization",
+        use_auth_token=True  # Uses cached auth token
+    )
+    DIARIZATION_HF_AVAILABLE = True
+    print("SUCCESS: Loaded speaker diarization model from cache")
+except Exception as e:
+    print(f"Info: HuggingFace speaker diarization model not available ({e})")
+    print("Info: Will use offline heuristic-based speaker diarization")
+    diarization_pipeline = None
+    DIARIZATION_HF_AVAILABLE = False
+
 from pathlib import Path
 from pydub import AudioSegment
 
@@ -104,6 +194,10 @@ FFMPEG_AVAILABLE = check_ffmpeg_availability()
 # Log early import decisions
 if not KEYWORD_OVERLAP_AVAILABLE:
     logging.warning("keyword_overlap module not available - using built-in fallback function")
+if not SIMILARITY_AVAILABLE:
+    logging.warning("calculate_similarity module not available - using built-in fallback function")
+if not SENTIMENT_AVAILABLE:
+    logging.warning("sentiment analysis module not available - using built-in fallback function")
 
 print("=== OFFLINE PARALINGUISTIC ANALYSIS ===")
 print("This version works without downloading ML models")
@@ -225,18 +319,76 @@ def extract_audio_features_optimized(audio_file, y=None, sr=None):
 
     return features
 
-def extract_audio_features(audio_file):
-    """Legacy function - kept for compatibility"""
-    return extract_audio_features_cached(audio_file)
+def analyze_emotion_hf(y, sr):
+    """
+    HuggingFace-based emotion analysis using Wav2Vec2 model.
 
-def analyze_emotion_optimized(y, sr):
-    """Offline dummy emotion analysis"""
-    logging.info("Running offline emotion analysis...")
-    time.sleep(0.1)  # Simulate processing time
-    
+    Uses the superb/wav2vec2-large-superb-er model to predict emotions
+    from audio waveform. Processes audio in chunks if too long.
+
+    Args:
+        y: Audio waveform (numpy array)
+        sr: Sample rate (should be 16000 for Wav2Vec2)
+
+    Returns:
+        str: Predicted emotion (Neutral, Calm, Happy, Sad, Angry, Fearful, Disgust, Surprised)
+    """
+    # Ensure correct sample rate for Wav2Vec2 (16kHz)
+    if sr != 16000:
+        y = librosa.resample(y, orig_sr=sr, target_sr=16000)
+        sr = 16000
+
+    # Limit audio length to 10 seconds for processing speed
+    max_samples = 10 * sr
+    if len(y) > max_samples:
+        # Take middle segment for better representation
+        start_idx = (len(y) - max_samples) // 2
+        y = y[start_idx:start_idx + max_samples]
+
+    # Process audio through model
+    try:
+        inputs = emotion_feature_extractor(
+            y,
+            sampling_rate=sr,
+            return_tensors="pt",
+            padding=True
+        )
+
+        with torch.no_grad():
+            logits = emotion_model(**inputs).logits
+
+        # Get predicted emotion index
+        emotion_prediction = torch.argmax(logits, dim=-1).item()
+
+        # Map index to emotion label
+        emotions = {
+            0: "Neutral", 1: "Calm", 2: "Happy", 3: "Sad",
+            4: "Angry", 5: "Fearful", 6: "Disgust", 7: "Surprised"
+        }
+
+        return emotions.get(emotion_prediction, "Neutral")
+
+    except Exception as e:
+        logging.warning(f"HuggingFace emotion analysis failed: {e}")
+        raise  # Re-raise to trigger fallback
+
+def analyze_emotion_offline(y, sr):
+    """
+    Offline heuristic-based emotion analysis.
+
+    Uses RMS energy (loudness) as a simple proxy for emotional intensity.
+    This is the fallback when HuggingFace models are not available.
+
+    Args:
+        y: Audio waveform (numpy array)
+        sr: Sample rate
+
+    Returns:
+        str: Predicted emotion based on energy levels
+    """
     # Use audio features for more realistic emotion prediction
     rms_energy = np.mean(librosa.feature.rms(y=y))
-    
+
     # Simple heuristic based on audio energy
     if rms_energy > 0.1:
         emotions = ["Happy", "Angry", "Surprised"]
@@ -244,13 +396,33 @@ def analyze_emotion_optimized(y, sr):
         emotions = ["Neutral", "Calm"]
     else:
         emotions = ["Sad", "Calm"]
-    
+
     return np.random.choice(emotions)
 
-def analyze_emotion(audio_file):
-    """Legacy function - kept for compatibility"""
-    y, sr = librosa.load(audio_file, sr=16000)
-    return analyze_emotion_optimized(y, sr)
+def analyze_emotion_optimized(y, sr):
+    """
+    Emotion analysis with HuggingFace model and offline fallback.
+
+    Attempts to use Wav2Vec2 emotion model from cache first.
+    Falls back to heuristic-based analysis if model not available.
+
+    Args:
+        y: Audio waveform (numpy array)
+        sr: Sample rate
+
+    Returns:
+        str: Predicted emotion
+    """
+    if EMOTION_HF_AVAILABLE:
+        try:
+            logging.info("Running HuggingFace emotion analysis...")
+            return analyze_emotion_hf(y, sr)
+        except Exception as e:
+            logging.warning(f"HuggingFace emotion analysis failed: {e}, using offline fallback")
+            return analyze_emotion_offline(y, sr)
+    else:
+        logging.info("Running offline emotion analysis...")
+        return analyze_emotion_offline(y, sr)
 
 def analyze_personality(features):
     """Personality analysis based on audio features"""
@@ -326,9 +498,15 @@ def analyze_single_speaker(speaker_data):
             "error": str(e)
         }
 
-def analyze_speakers_parallel(audio_file, speaker_segments):
-    """Analyze speakers in parallel for better performance"""
-    speaker_audio_files = extract_speaker_segments(audio_file, speaker_segments)
+def analyze_speakers_parallel(audio_file, speaker_segments, auto_reuse_segments=None):
+    """Analyze speakers in parallel for better performance
+
+    Args:
+        audio_file: Path to audio file
+        speaker_segments: Dictionary of speaker segments
+        auto_reuse_segments: If True, reuse existing segments; if False, regenerate; if None, prompt user
+    """
+    speaker_audio_files = extract_speaker_segments(audio_file, speaker_segments, auto_reuse_segments)
     
     # Use ThreadPoolExecutor for I/O bound tasks (audio loading)
     max_workers = min(len(speaker_audio_files), mp.cpu_count())
@@ -344,35 +522,74 @@ def analyze_speakers_parallel(audio_file, speaker_segments):
     
     return results
 
-def analyze_speakers(audio_file):
-    """Legacy function - kept for compatibility"""
-    speaker_segments = diarize_speakers(audio_file)
-    return analyze_speakers_parallel(audio_file, speaker_segments)
-
 @lru_cache(maxsize=8)
 def diarize_speakers_cached(audio_file_path):
     """Cached speaker diarization"""
     return diarize_speakers_internal(audio_file_path)
 
-def diarize_speakers_internal(audio_file):
-    """Improved offline speaker diarization using audio analysis"""
-    logging.info("Using enhanced offline speaker diarization")
-    
+def diarize_speakers_hf(audio_file):
+    """
+    HuggingFace-based speaker diarization using pyannote.audio.
+
+    Uses the pyannote/speaker-diarization pipeline to professionally
+    identify "who spoke when" in the audio file.
+
+    Args:
+        audio_file: Path to audio file
+
+    Returns:
+        dict: Speaker segments in format {speaker_id: [(start, end), ...]}
+    """
+    logging.info("Running HuggingFace speaker diarization...")
+
+    # Run diarization pipeline
+    diarization = diarization_pipeline({"uri": "sample", "audio": audio_file})
+
+    # Convert pyannote output to our format
+    speaker_segments = {}
+    for turn, _, speaker in diarization.itertracks(yield_label=True):
+        if speaker not in speaker_segments:
+            speaker_segments[speaker] = []
+        speaker_segments[speaker].append((turn.start, turn.end))
+
+    # Log results
+    logging.info(f"pyannote detected {len(speaker_segments)} speakers")
+    for speaker, segments in speaker_segments.items():
+        total_time = sum(end - start for start, end in segments)
+        logging.info(f"{speaker}: {len(segments)} segments, {total_time:.2f}s total")
+
+    return speaker_segments
+
+def diarize_speakers_offline(audio_file):
+    """
+    Offline heuristic-based speaker diarization.
+
+    Uses audio analysis (energy, pitch, MFCC) to detect speaker changes.
+    This is the fallback when HuggingFace models are not available.
+
+    Args:
+        audio_file: Path to audio file
+
+    Returns:
+        dict: Speaker segments in format {speaker_id: [(start, end), ...]}
+    """
+    logging.info("Using offline heuristic-based speaker diarization")
+
     try:
         # Load audio with librosa for better analysis
         y, sr = librosa.load(audio_file, sr=16000)
         duration = len(y) / sr
-        
+
         # Perform voice activity detection and speaker change detection
         speaker_segments = detect_speaker_changes(y, sr, duration)
-        
+
         logging.info(f"Detected {len(speaker_segments)} speaker groups")
         for speaker, segments in speaker_segments.items():
             total_time = sum(end - start for start, end in segments)
             logging.info(f"{speaker}: {len(segments)} segments, {total_time:.2f}s total")
-        
+
         return speaker_segments
-        
+
     except Exception as e:
         logging.error(f"Enhanced diarization failed: {e}")
         logging.info("Using simple time-based split as final fallback method")
@@ -389,6 +606,28 @@ def diarize_speakers_internal(audio_file):
             logging.error(f"Final fallback also failed: {final_error}")
             logging.warning("Using absolute minimal fallback with 10-second assumption")
             return {"SPEAKER_00": [(0, 10)]}  # Final fallback
+
+def diarize_speakers_internal(audio_file):
+    """
+    Speaker diarization with HuggingFace model and offline fallback.
+
+    Attempts to use pyannote.audio diarization pipeline from cache first.
+    Falls back to heuristic-based analysis if model not available.
+
+    Args:
+        audio_file: Path to audio file
+
+    Returns:
+        dict: Speaker segments in format {speaker_id: [(start, end), ...]}
+    """
+    if DIARIZATION_HF_AVAILABLE:
+        try:
+            return diarize_speakers_hf(audio_file)
+        except Exception as e:
+            logging.warning(f"HuggingFace speaker diarization failed: {e}, using offline fallback")
+            return diarize_speakers_offline(audio_file)
+    else:
+        return diarize_speakers_offline(audio_file)
 
 def detect_speaker_changes(y, sr, duration):
     """Detect speaker changes using audio features"""
@@ -538,21 +777,37 @@ def diarize_speakers(audio_file):
     """Main diarization function with caching"""
     return diarize_speakers_cached(audio_file)
 
-def extract_speaker_segments(audio_file, speaker_segments):
-    """Extract speaker segments - offline version with analysis_results directory"""
+def extract_speaker_segments(audio_file, speaker_segments, auto_reuse_segments=None):
+    """Extract speaker segments - offline version with analysis_results directory
+
+    Args:
+        audio_file: Path to audio file
+        speaker_segments: Dictionary of speaker segments
+        auto_reuse_segments: If True, reuse existing segments; if False, regenerate; if None, prompt user
+    """
     # Create analysis_results directory
     results_dir = Path("analysis_results")
     results_dir.mkdir(exist_ok=True)
-    
+
     # Check for existing speaker files in analysis_results
     speaker_file_test = results_dir / f"{Path(audio_file).stem}_speaker_SPEAKER_00.wav"
     generate = True
-    
+
     if speaker_file_test.exists():
-        user_input = input("One or more speaker segment files appear to already exist. Should they be regenerated? (y/N): ")
-        user_input = (str(user_input).strip()).lower()
-        if user_input in ['n', 'false', 'f', '', 'no']:
+        if auto_reuse_segments is None:
+            # Prompt user for input
+            user_input = input("One or more speaker segment files appear to already exist. Should they be regenerated? (y/N): ")
+            user_input = (str(user_input).strip()).lower()
+            if user_input in ['n', 'false', 'f', '', 'no']:
+                generate = False
+        elif auto_reuse_segments:
+            # Auto-reuse existing segments
             generate = False
+            logging.info("Reusing existing speaker segment files (auto_reuse_segments=True)")
+        else:
+            # Auto-regenerate segments
+            generate = True
+            logging.info("Regenerating speaker segment files (auto_reuse_segments=False)")
 
     speaker_audio_files = {}
 
@@ -707,10 +962,6 @@ def transcribe_audio_optimized(audio_file, model_path="vosk-model-en-us-0.22"):
     
     return np.random.choice(transcripts)
 
-def transcribe_audio(audio_file, model_path="vosk-model-en-us-0.22"):
-    """Legacy function - kept for compatibility"""
-    return transcribe_audio_optimized(audio_file, model_path)
-
 def analyze_turn_taking(speaker_segments):
     """Analyze turn-taking patterns"""
     speaker_1_times = speaker_segments.get("SPEAKER_00", [])
@@ -833,78 +1084,223 @@ def analyze_comprehension_parallel(audio_file, speaker_segments, emotions):
         transcriptions = transcription_future.result()
     
     backchannel_count = len([b for b in backchannels if b[0] == "SPEAKER_01"])
-    
+
     # Calculate overlap ratio with error handling
     overlap_ratio = 0.0
     if "SPEAKER_00" in transcriptions and "SPEAKER_01" in transcriptions:
         try:
-            overlap_ratio = keyword_overlap(transcriptions["SPEAKER_00"], transcriptions["SPEAKER_01"])
+            # Try HuggingFace version first if available
+            if KEYWORD_OVERLAP_HF_AVAILABLE:
+                overlap_ratio = keyword_overlap_hf(transcriptions["SPEAKER_00"], transcriptions["SPEAKER_01"])
+                logging.info(f"Using HuggingFace keyword overlap: {overlap_ratio:.3f}")
+            else:
+                overlap_ratio = keyword_overlap_offline(transcriptions["SPEAKER_00"], transcriptions["SPEAKER_01"])
+                logging.info(f"Using offline keyword overlap: {overlap_ratio:.3f}")
         except Exception as e:
-            logging.warning(f"Keyword overlap analysis failed: {e}")
-            # Simple fallback overlap calculation
-            words1 = set(transcriptions["SPEAKER_00"].lower().split())
-            words2 = set(transcriptions["SPEAKER_01"].lower().split())
-            if words1 and words2:
-                overlap = len(words1.intersection(words2))
-                overlap_ratio = overlap / max(len(words1), len(words2))
-            logging.info(f"Using fallback overlap calculation: {overlap_ratio:.3f}")
+            logging.warning(f"Keyword overlap analysis failed: {e}, using offline fallback")
+            overlap_ratio = keyword_overlap_offline(transcriptions["SPEAKER_00"], transcriptions["SPEAKER_01"])
+            logging.info(f"Using offline overlap calculation: {overlap_ratio:.3f}")
+
+    # Calculate similarity score with error handling
+    similarity_score = 0.0
+    if "SPEAKER_00" in transcriptions and "SPEAKER_01" in transcriptions:
+        try:
+            # Try HuggingFace version first if available
+            if SIMILARITY_HF_AVAILABLE:
+                try:
+                    from transformers import AutoTokenizer, AutoModel
+                    tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+                    model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+                    similarity_score = calculate_similarity_hf(transcriptions["SPEAKER_00"],
+                                                              transcriptions["SPEAKER_01"],
+                                                              tokenizer, model)
+                    logging.info(f"Using HuggingFace similarity: {similarity_score:.3f}")
+                except Exception as model_error:
+                    logging.warning(f"Could not load HuggingFace similarity model: {model_error}, using offline fallback")
+                    similarity_score = calculate_similarity_offline(transcriptions["SPEAKER_00"],
+                                                                   transcriptions["SPEAKER_01"])
+                    logging.info(f"Using offline similarity: {similarity_score:.3f}")
+            else:
+                similarity_score = calculate_similarity_offline(transcriptions["SPEAKER_00"],
+                                                               transcriptions["SPEAKER_01"])
+                logging.info(f"Using offline similarity: {similarity_score:.3f}")
+        except Exception as e:
+            logging.warning(f"Similarity calculation failed: {e}, using offline fallback")
+            similarity_score = calculate_similarity_offline(transcriptions["SPEAKER_00"],
+                                                           transcriptions["SPEAKER_01"])
+            logging.info(f"Using offline similarity fallback: {similarity_score:.3f}")
+
+    # Calculate sentiment scores with error handling
+    sentiment_metrics = {'text1_sentiment': 3.0, 'text2_sentiment': 3.0, 'sentiment_difference': 0.0}
+    if "SPEAKER_00" in transcriptions and "SPEAKER_01" in transcriptions:
+        try:
+            # Try HuggingFace version first if available
+            if SENTIMENT_HF_AVAILABLE:
+                try:
+                    sentiment_metrics = analyze_sentiment_hf(transcriptions["SPEAKER_00"],
+                                                            transcriptions["SPEAKER_01"])
+                    logging.info(f"Using HuggingFace sentiment - Speaker 1: {sentiment_metrics['text1_sentiment']:.2f}, "
+                                f"Speaker 2: {sentiment_metrics['text2_sentiment']:.2f}, "
+                                f"Difference: {sentiment_metrics['sentiment_difference']:.2f}")
+                except Exception as hf_error:
+                    logging.warning(f"HuggingFace sentiment analysis failed: {hf_error}, using offline fallback")
+                    sentiment_metrics = analyze_sentiment_offline(transcriptions["SPEAKER_00"],
+                                                                 transcriptions["SPEAKER_01"])
+                    logging.info(f"Using offline sentiment (neutral scores)")
+            else:
+                sentiment_metrics = analyze_sentiment_offline(transcriptions["SPEAKER_00"],
+                                                             transcriptions["SPEAKER_01"])
+                logging.info(f"Using offline sentiment (neutral scores)")
+        except Exception as e:
+            logging.warning(f"Sentiment analysis failed: {e}, using offline fallback")
+            sentiment_metrics = analyze_sentiment_offline(transcriptions["SPEAKER_00"],
+                                                         transcriptions["SPEAKER_01"])
 
     comprehension_score = (
-        (alignment_ratio or 0) * 0.3 + 
-        (1 / (1 + (avg_response_time or 1))) * 0.3 + 
+        (alignment_ratio or 0) * 0.3 +
+        (1 / (1 + (avg_response_time or 1))) * 0.3 +
         (overlap_ratio or 0) * 0.3 +
         (backchannel_count > 5) * 0.1
     )
-    
+
     comprehension_summary = {
         "average_response_time": avg_response_time,
         "emotion_alignment_ratio": alignment_ratio,
         "keyword_overlap_ratio": overlap_ratio,
         "backchannel_count": backchannel_count,
-        "overall_comprehension_score": comprehension_score
+        "overall_comprehension_score": comprehension_score,
+        "overall_similarity_score": similarity_score,
+        "speaker1_sentiment": sentiment_metrics['text1_sentiment'],
+        "speaker2_sentiment": sentiment_metrics['text2_sentiment'],
+        "sentiment_difference": sentiment_metrics['sentiment_difference']
     }
     logging.info("Comprehension Summary: %s" % str(comprehension_summary))
     return comprehension_summary
 
-def analyze_comprehension(audio_file, speaker_segments, emotions):
-    """Legacy function - kept for compatibility"""
-    return analyze_comprehension_parallel(audio_file, speaker_segments, emotions)
+def extract_results_as_dict(results, comprehension_summary=None, iteration_id=0):
+    """Extract results as a list of dictionaries (for bootstrap testing)
 
-def save_results(results, timing_info, audio_file):
-    """Save analysis results to JSON and CSV files"""
+    Args:
+        results: Speaker analysis results
+        comprehension_summary: Comprehension analysis results (optional)
+        iteration_id: Iteration identifier for bootstrap testing
+
+    Returns:
+        list: List of dictionaries, one per speaker with all metrics
+    """
+    # Extract comprehension metrics
+    comp = comprehension_summary if comprehension_summary else {}
+    overall_similarity = comp.get('overall_similarity_score', 0.0)
+    overall_comprehension = comp.get('overall_comprehension_score', 0.0)
+    speaker1_sentiment = comp.get('speaker1_sentiment', 3.0)
+    speaker2_sentiment = comp.get('speaker2_sentiment', 3.0)
+    sentiment_diff = comp.get('sentiment_difference', 0.0)
+
+    rows = []
+    for speaker, data in results.items():
+        features = data.get('audio_features', {})
+        personality = data.get('personality', {})
+
+        row = {
+            'Iteration': iteration_id,
+            'Speaker': speaker,
+            'Emotion': data.get('emotion', 'Unknown'),
+            'Pitch_Mean': features.get('pitch_mean', 0),
+            'Pitch_Std': features.get('pitch_std', 0),
+            'Intensity_Mean': features.get('intensity_mean', 0),
+            'Intensity_Std': features.get('intensity_std', 0),
+            'MFCC_Mean': features.get('mfcc_mean', 0),
+            'MFCC_Std': features.get('mfcc_std', 0),
+            'Tempo': features.get('tempo', 120.0),
+            'Extraversion': personality.get('extraversion', 'Unknown'),
+            'Openness': personality.get('openness', 'Unknown'),
+            'Conscientiousness': personality.get('conscientiousness', 'Unknown'),
+            'Overall_Similarity_Score': overall_similarity,
+            'Overall_Comprehension_Score': overall_comprehension,
+            'Speaker1_Sentiment': speaker1_sentiment,
+            'Speaker2_Sentiment': speaker2_sentiment,
+            'Sentiment_Difference': sentiment_diff,
+            'Processing_Time': data.get('processing_time', 0)
+        }
+        rows.append(row)
+
+    return rows
+
+def save_results(results, timing_info, audio_file, comprehension_summary=None, iteration_id=0):
+    """Save analysis results to JSON and CSV files
+
+    Args:
+        results: Speaker analysis results
+        timing_info: Processing timing information
+        audio_file: Path to audio file
+        comprehension_summary: Comprehension analysis results (optional)
+        iteration_id: Iteration identifier for bootstrap testing (default=0)
+    """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_name = Path(audio_file).stem
-    
+
     # Create results directory
     results_dir = Path("analysis_results")
     results_dir.mkdir(exist_ok=True)
-    
+
     # Prepare comprehensive results
     comprehensive_results = {
         "metadata": {
             "audio_file": str(audio_file),
             "timestamp": timestamp,
             "processing_summary": timing_info,
-            "offline_mode": True
+            "offline_mode": True,
+            "iteration_id": iteration_id
         },
-        "speaker_analysis": results
+        "speaker_analysis": results,
+        "comprehension_analysis": comprehension_summary if comprehension_summary else {}
     }
-    
+
     # Save JSON results
     json_file = results_dir / f"{base_name}_analysis_{timestamp}.json"
     with open(json_file, 'w') as f:
         json.dump(comprehensive_results, f, indent=2)
-    
-    # Save CSV summary
+
+    # Extract comprehension metrics
+    comp = comprehension_summary if comprehension_summary else {}
+    overall_similarity = comp.get('overall_similarity_score', 0.0)
+    overall_comprehension = comp.get('overall_comprehension_score', 0.0)
+    speaker1_sentiment = comp.get('speaker1_sentiment', 3.0)
+    speaker2_sentiment = comp.get('speaker2_sentiment', 3.0)
+    sentiment_diff = comp.get('sentiment_difference', 0.0)
+
+    # Save CSV summary with all metrics
     csv_file = results_dir / f"{base_name}_summary_{timestamp}.csv"
     with open(csv_file, 'w') as f:
-        f.write("Speaker,Emotion,Pitch_Mean,Intensity_Mean,Extraversion,Openness,Conscientiousness,Processing_Time\n")
+        # Write comprehensive header
+        f.write("Iteration,Speaker,Emotion,Pitch_Mean,Pitch_Std,Intensity_Mean,Intensity_Std,"
+               "MFCC_Mean,MFCC_Std,Tempo,Extraversion,Openness,Conscientiousness,"
+               "Overall_Similarity_Score,Overall_Comprehension_Score,"
+               "Speaker1_Sentiment,Speaker2_Sentiment,Sentiment_Difference,Processing_Time\n")
+
+        # Write data for each speaker
         for speaker, data in results.items():
             features = data.get('audio_features', {})
             personality = data.get('personality', {})
-            f.write(f"{speaker},{data.get('emotion', 'Unknown')},{features.get('pitch_mean', 0):.2f},"
-                   f"{features.get('intensity_mean', 0):.4f},{personality.get('extraversion', 'Unknown')},"
-                   f"{personality.get('openness', 'Unknown')},{personality.get('conscientiousness', 'Unknown')},"
+
+            f.write(f"{iteration_id},"
+                   f"{speaker},"
+                   f"{data.get('emotion', 'Unknown')},"
+                   f"{features.get('pitch_mean', 0):.2f},"
+                   f"{features.get('pitch_std', 0):.2f},"
+                   f"{features.get('intensity_mean', 0):.4f},"
+                   f"{features.get('intensity_std', 0):.4f},"
+                   f"{features.get('mfcc_mean', 0):.4f},"
+                   f"{features.get('mfcc_std', 0):.4f},"
+                   f"{features.get('tempo', 120.0):.2f},"
+                   f"{personality.get('extraversion', 'Unknown')},"
+                   f"{personality.get('openness', 'Unknown')},"
+                   f"{personality.get('conscientiousness', 'Unknown')},"
+                   f"{overall_similarity:.4f},"
+                   f"{overall_comprehension:.4f},"
+                   f"{speaker1_sentiment:.2f},"
+                   f"{speaker2_sentiment:.2f},"
+                   f"{sentiment_diff:.2f},"
                    f"{data.get('processing_time', 0):.2f}\n")
     
     # Save detailed report
@@ -988,11 +1384,18 @@ def process_batch_files(audio_files, **kwargs):
     
     return results
 
-def process_single_file(audio_file, skip_diarization=False, max_duration=None):
-    """Process a single audio file with optimizations"""
-    
+def process_single_file(audio_file, skip_diarization=False, max_duration=None, auto_reuse_segments=None):
+    """Process a single audio file with optimizations
+
+    Args:
+        audio_file: Path to audio file
+        skip_diarization: Whether to skip speaker diarization
+        max_duration: Maximum audio duration in seconds
+        auto_reuse_segments: If True, reuse existing speaker segments; if False, regenerate; if None, prompt user
+    """
+
     logging.info(f"Processing audio file: {audio_file}")
-    
+
     # Optional: Trim audio for faster processing
     if max_duration:
         audio_file = trim_audio_if_needed(audio_file, max_duration)
@@ -1011,7 +1414,7 @@ def process_single_file(audio_file, skip_diarization=False, max_duration=None):
 
     # Speaker analysis (parallelized)
     analysis_start = time.time()
-    speaker_analysis_results = analyze_speakers_parallel(audio_file, speaker_segments)
+    speaker_analysis_results = analyze_speakers_parallel(audio_file, speaker_segments, auto_reuse_segments)
     analysis_time = time.time() - analysis_start
     logging.info(f"Speaker analysis completed in {analysis_time:.2f} seconds")
 
@@ -1139,7 +1542,8 @@ def main():
         }
         
         # Save results to files
-        json_file, csv_file, report_file = save_results(speaker_analysis, timing_info, args.audiofile[0])
+        json_file, csv_file, report_file = save_results(speaker_analysis, timing_info, args.audiofile[0],
+                                                         comprehension_summary=comprehension, iteration_id=0)
         
         # Display results
         print(f"\n=== ANALYSIS RESULTS ===")

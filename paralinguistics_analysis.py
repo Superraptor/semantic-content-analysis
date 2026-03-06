@@ -485,7 +485,8 @@ def load_huggingface_models():
         logging.info("Loading speaker diarization model from cache...")
         diarization_pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
-            use_auth_token=True
+            use_auth_token=True,
+            device = "cuda" if torch.cuda.is_available() else "cpu"
         )
         DIARIZATION_HF_AVAILABLE = True
         logging.info("Diarization model loaded successfully")
@@ -652,22 +653,192 @@ def diarize_speakers(audio_file):
     Returns:
         dict: Speaker segments {speaker_id: [(start, end), ...]}
     """
-    if DIARIZATION_HF_AVAILABLE:
+    # Helper: preprocess with webrtcvad to get speech-only regions
+    def preprocess_for_diarization(in_file, target_sr=16000, aggressiveness=2):
         try:
-            logging.info("Running HuggingFace speaker diarization")
-            diarization = diarization_pipeline({"uri": "sample", "audio": audio_file})
+            import wave, tempfile
+            import webrtcvad
 
+            # Export resampled mono 16-bit wav to temp
+            audio = AudioSegment.from_file(in_file)
+            audio = audio.set_frame_rate(target_sr).set_channels(1).set_sample_width(2)
+            tmp_wav = str(Path(tempfile.gettempdir()) / f"diarize_{Path(in_file).stem}.wav")
+            audio.export(tmp_wav, format="wav")
+
+            # Read raw pcm bytes
+            with wave.open(tmp_wav, 'rb') as wf:
+                sample_rate = wf.getframerate()
+                pcm = wf.readframes(wf.getnframes())
+
+            vad = webrtcvad.Vad(aggressiveness)
+
+            frame_ms = 30
+            frame_bytes = int(sample_rate * (frame_ms / 1000.0)) * 2
+
+            speech_regions = []
+            is_speech = False
+            region_start = 0.0
+            for i in range(0, len(pcm), frame_bytes):
+                frame = pcm[i:i+frame_bytes]
+                timestamp = (i / 2) / sample_rate
+                try:
+                    speech = vad.is_speech(frame, sample_rate)
+                except Exception:
+                    speech = False
+
+                if speech and not is_speech:
+                    is_speech = True
+                    region_start = timestamp
+                elif not speech and is_speech:
+                    is_speech = False
+                    region_end = timestamp
+                    # merge very short regions are filtered by caller
+                    speech_regions.append((region_start, region_end))
+
+            # If file ends during speech
+            if is_speech:
+                speech_regions.append((region_start, (len(pcm)/2) / sample_rate))
+
+            return tmp_wav, speech_regions
+        except Exception as e:
+            logging.warning(f"Preprocessing/VAD failed: {e}")
+            return audio_file, []
+
+    # Helper: run pyannote pipeline and optionally filter by VAD regions
+    def run_pyannote_diarization(in_file, min_speakers=2, max_speakers=6, speech_regions=None):
+        try:
+            from pyannote.core import Segment
+
+            try:
+                diarization = diarization_pipeline({"uri": Path(in_file).stem, "audio": in_file},
+                                                   min_speakers=min_speakers, max_speakers=max_speakers)
+            except Exception as exc:
+                # Fallback: some environments lack torchcodec/ffmpeg; preload audio and pass waveform
+                logging.warning(f"Pyannote file-based decode failed ({exc}), attempting in-memory waveform pass")
+                try:
+                    import librosa
+                    import torch
+
+                    y, sr = librosa.load(in_file, sr=16000)
+                    waveform = torch.from_numpy(y).unsqueeze(0)
+                    diarization = diarization_pipeline({"uri": Path(in_file).stem,
+                                                       "audio": {"waveform": waveform, "sample_rate": sr}},
+                                                       min_speakers=min_speakers, max_speakers=max_speakers)
+                except Exception as exc2:
+                    logging.warning(f"Pyannote in-memory decode also failed: {exc2}")
+                    raise exc2
+
+            # Convert to dictionary and optionally filter using speech_regions
             speaker_segments = {}
             for turn, _, speaker in diarization.itertracks(yield_label=True):
+                # If speech_regions provided, skip segments outside speech
+                if speech_regions:
+                    overlaps = False
+                    for s_start, s_end in speech_regions:
+                        if not (turn.end <= s_start or turn.start >= s_end):
+                            overlaps = True
+                            break
+                    if not overlaps:
+                        continue
+
                 if speaker not in speaker_segments:
                     speaker_segments[speaker] = []
                 speaker_segments[speaker].append((turn.start, turn.end))
 
-            logging.info(f"Detected {len(speaker_segments)} speakers")
             return speaker_segments
+        except Exception as e:
+            logging.warning(f"Pyannote diarization run failed: {e}")
+            raise
+
+    # Helper: embedding + clustering fallback using SpeechBrain ECAPA + HDBSCAN/HAC
+    def embed_and_cluster_fallback(in_file, window_size=1.5, step=0.75, min_cluster_size=2):
+        try:
+            import tempfile, soundfile as sf
+            from speechbrain.inference import EncoderClassifier
+            import hdbscan
+            from sklearn.cluster import AgglomerativeClustering
+
+            enc = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", savedir="./.cache/speechbrain_ecapa")
+
+            y, sr = librosa.load(in_file, sr=16000)
+            dur = len(y) / sr
+            windows = []
+            pos = 0.0
+            while pos < dur:
+                start = pos
+                end = min(dur, pos + window_size)
+                s_idx = int(start * sr); e_idx = int(end * sr)
+                seg = y[s_idx:e_idx]
+                if len(seg) < int(0.2 * sr):
+                    pos += step
+                    continue
+                tmpf = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+                sf.write(tmpf.name, seg, sr)
+                emb = enc.encode_file(tmpf.name).squeeze().cpu().numpy()
+                windows.append((start, end, emb))
+                pos += step
+
+            if not windows:
+                return diarize_speakers_offline(in_file)
+
+            X = np.vstack([w[2] for w in windows])
+
+            try:
+                clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size)
+                labels = clusterer.fit_predict(X)
+            except Exception:
+                clusterer = AgglomerativeClustering(n_clusters=None, distance_threshold=1.0)
+                labels = clusterer.fit_predict(X)
+
+            # Map labels to segments
+            segments = {}
+            for (start, end, _), label in zip(windows, labels):
+                if label < 0:
+                    continue
+                speaker = f"SPEAKER_{label:02d}"
+                segments.setdefault(speaker, []).append((start, end))
+
+            # Merge adjacent windows of same label
+            from itertools import groupby
+            merged = {}
+            for spk, segs in segments.items():
+                segs_sorted = sorted(segs, key=lambda x: x[0])
+                merged_list = []
+                cur_s, cur_e = segs_sorted[0]
+                for s, e in segs_sorted[1:]:
+                    if s - cur_e <= 0.5:
+                        cur_e = e
+                    else:
+                        merged_list.append((cur_s, cur_e))
+                        cur_s, cur_e = s, e
+                merged_list.append((cur_s, cur_e))
+                merged[spk] = merged_list
+
+            return merged
+        except Exception as e:
+            logging.warning(f"Embedding+clustering fallback failed: {e}")
+            return diarize_speakers_offline(in_file)
+
+    # Main diarization flow
+    if DIARIZATION_HF_AVAILABLE:
+        try:
+            logging.info("Running HuggingFace speaker diarization with preprocessing and hybrid fallback")
+            # Preprocess with VAD to get speech regions
+            try:
+                tmp_wav, speech_regions = preprocess_for_diarization(audio_file)
+            except Exception:
+                tmp_wav, speech_regions = audio_file, []
+
+            try:
+                speaker_segments = run_pyannote_diarization(tmp_wav, min_speakers=2, max_speakers=6, speech_regions=speech_regions)
+                logging.info(f"Detected {len(speaker_segments)} speakers")
+                return speaker_segments
+            except Exception:
+                logging.info("Pyannote pipeline failed, attempting embedding+clustering fallback")
+                return embed_and_cluster_fallback(audio_file)
 
         except Exception as e:
-            logging.warning(f"HF diarization failed: {e}, using offline fallback")
+            logging.warning(f"HF diarization overall failed: {e}, using offline fallback")
             return diarize_speakers_offline(audio_file)
     else:
         return diarize_speakers_offline(audio_file)

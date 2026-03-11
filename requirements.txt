@@ -19,3 +19,9 @@ whisperx @ git+https://github.com/m-bain/whisperx.git
 huggingface-hub>=0.24.0
 omegaconf>=2.3.0
 torchaudio>=2.8.0
+
+# Required for analysis outputs
+pandas>=2.0.0
+numpy>=1.26.0
+sentence-transformers>=2.2.0
+openpyxl>=3.1.0

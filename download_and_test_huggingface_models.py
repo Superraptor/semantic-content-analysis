@@ -38,7 +38,7 @@ Steps:
    - https://huggingface.co/pyannote/speaker-diarization-3.1
    - https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb
 5. After successful login, comment this section out again
-
+"""
 from huggingface_hub import login
 
 print("="*60)
@@ -60,7 +60,7 @@ print("  3. https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb")
 print("")
 input("Press Enter after accepting terms to continue...")
 print("="*60)
-"""
+
 
 def download_model_manual(repo_id, model_name):
     """Download model using direct file download (bypasses CAS)"""

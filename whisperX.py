@@ -1,3 +1,25 @@
+# -----------------------------------------------------------------------------
+# Setup Instructions (run once before the first execution):
+#
+# 1) Create and activate a Python virtual environment (recommended):
+#    - Windows (PowerShell):
+#        python -m venv .venv
+#        .\.venv\Scripts\Activate.ps1
+#    - macOS/Linux (bash/zsh):
+#        python -m venv .venv
+#        source .venv/bin/activate
+#
+# 2) Install dependencies from requirements.txt:
+#        pip install -r requirements.txt
+#
+# 3) Run the script:
+#        python whisperX.py <path_to_audio.wav>
+#
+# Notes:
+#  - The first run may download large models (SpeechBrain, SentenceTransformers, etc.).
+#  - If you want to re-run with a clean environment, delete the .venv folder and repeat step 1.
+# -----------------------------------------------------------------------------
+
 import whisperx
 import gc
 import torch
@@ -6,6 +28,12 @@ from contextlib import contextmanager
 import argparse
 import sys
 import os
+
+import pandas as pd
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from sentence_transformers import SentenceTransformer, util
+from speechbrain.pretrained import EncoderClassifier
+from textblob import TextBlob
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -37,16 +65,253 @@ def allow_pickle_load():
         torch.load = original_torch_load
         cloud_io.torch.load = original_torch_load
 
+
+def load_analysis_models(device="cpu"):
+    """Load models used for emotion, sentiment, and similarity scoring."""
+    global emotion_classifier, sentiment_tokenizer, sentiment_model, similarity_model
+
+    # Emotion (SpeechBrain)
+    try:
+        print("Loading SpeechBrain emotion model...", flush=True)
+        emotion_classifier = EncoderClassifier.from_hparams(
+            source="speechbrain/emotion-recognition-wav2vec2",
+            savedir="pretrained_models/emotion",
+            run_opts={"device": device}
+        )
+        print("✓ Emotion model loaded", flush=True)
+    except Exception as e:
+        print(f"✗ Emotion model failed to load: {e}", flush=True)
+        emotion_classifier = None
+
+    # Sentiment (CardiffNLP)
+    try:
+        print("Loading sentiment model...", flush=True)
+        sentiment_tokenizer = AutoTokenizer.from_pretrained("cardiffnlp/twitter-roberta-base-sentiment")
+        sentiment_model = AutoModelForSequenceClassification.from_pretrained(
+            "cardiffnlp/twitter-roberta-base-sentiment"
+        )
+        sentiment_model.eval()
+        if device == "cuda":
+            sentiment_model.to(device)
+        print("✓ Sentiment model loaded", flush=True)
+    except Exception as e:
+        print(f"✗ Sentiment model failed to load: {e}", flush=True)
+        sentiment_tokenizer = None
+        sentiment_model = None
+
+    # Similarity (SentenceTransformers)
+    try:
+        print("Loading similarity model...", flush=True)
+        similarity_model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2", device=device)
+        print("✓ Similarity model loaded", flush=True)
+    except Exception as e:
+        print(f"✗ Similarity model failed to load: {e}", flush=True)
+        similarity_model = None
+
+
+def predict_emotion_for_speaker(speaker_audio_dir):
+    """Predict the predominant emotion for a speaker given their audio clips."""
+    if emotion_classifier is None:
+        return None
+
+    labels = []
+    for wav_path in Path(speaker_audio_dir).glob("*.wav"):
+        try:
+            out_prob, score, idx, text_lab = emotion_classifier.classify_file(str(wav_path))
+            if text_lab:
+                labels.append(text_lab[0])
+        except Exception:
+            continue
+
+    if not labels:
+        return None
+
+    from collections import Counter
+    return Counter(labels).most_common(1)[0][0]
+
+
+def analyze_sentiment_text(text):
+    """Analyze sentiment of text using the loaded sentiment model."""
+    if sentiment_model is None or sentiment_tokenizer is None or not text:
+        return {"label": None, "confidence": None, "score": None}
+
+    inputs = sentiment_tokenizer(text, return_tensors="pt", truncation=True, padding=True)
+    if device == "cuda":
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = sentiment_model(**inputs)
+        probs = torch.softmax(outputs.logits, dim=-1)[0]
+        score, idx = torch.max(probs, dim=-1)
+        label = sentiment_model.config.id2label.get(idx.item(), None)
+
+    # Map to 1-5 scale (negative=1, neutral=3, positive=5)
+    mapping = {"LABEL_0": 1.0, "LABEL_1": 3.0, "LABEL_2": 5.0}
+    numeric = mapping.get(label, None)
+
+    return {"label": label, "confidence": float(score), "score": numeric}
+
+
+def _get_sentence_embedding(text):
+    if similarity_model is None or not text:
+        return None
+
+    if text in _similarity_embeddings:
+        return _similarity_embeddings[text]
+
+    emb = similarity_model.encode(text, convert_to_tensor=True)
+    _similarity_embeddings[text] = emb
+    return emb
+
+
+def keyword_overlap(text1, text2):
+    """Compute keyword overlap ratio between two texts."""
+    try:
+        blob1 = TextBlob(text1)
+        blob2 = TextBlob(text2)
+        keywords1 = set(blob1.noun_phrases)
+        keywords2 = set(blob2.noun_phrases)
+
+        if not keywords1 or not keywords2:
+            return 0.0
+
+        overlap = keywords1.intersection(keywords2)
+        return len(overlap) / max(len(keywords1), len(keywords2))
+    except Exception:
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        if not words1 or not words2:
+            return 0.0
+        intersection = len(words1.intersection(words2))
+        union = len(words1.union(words2))
+        return intersection / union if union > 0 else 0.0
+
+
+def calculate_similarity(text1, text2):
+    """Compute cosine similarity between two pieces of text."""
+    emb1 = _get_sentence_embedding(text1)
+    emb2 = _get_sentence_embedding(text2)
+    if emb1 is None or emb2 is None:
+        return None
+
+    sim = util.pytorch_cos_sim(emb1, emb2)
+    return float(sim.item())
+
+
+def save_analysis_results(output_dir, audio_file, speaker_segments):
+    """Save speaker-level and conversation-level analysis to Excel files."""
+    # Build transcripts per speaker
+    speaker_texts = {
+        speaker: " ".join([seg.get("text", "") for seg in segments]).strip()
+        for speaker, segments in speaker_segments.items()
+    }
+
+    # Compute speaker-level metrics
+    rows = []
+    for speaker, text in sorted(speaker_texts.items()):
+        sentiment = analyze_sentiment_text(text)
+
+        # Emotion: use speaker audio clips if available
+        speaker_dir = Path(output_dir) / "audio_clips" / speaker.replace(" ", "_")
+        emotion = predict_emotion_for_speaker(speaker_dir) if speaker_dir.exists() else None
+
+        rows.append({
+            "Audio_File": Path(audio_file).name,
+            "Speaker_ID": speaker,
+            "Emotion": emotion,
+            "Sentiment_Label": sentiment.get("label"),
+            "Sentiment_Score": sentiment.get("score"),
+            "Sentiment_Confidence": sentiment.get("confidence"),
+            "Transcript": text,
+        })
+
+    speaker_df = pd.DataFrame(rows)
+
+    # Calculate pairwise similarity (averaged per speaker)
+    similarity_values = []
+    for i, speaker_a in enumerate(speaker_df["Speaker_ID"]):
+        text_a = speaker_texts.get(speaker_a, "")
+        sims = []
+        for j, speaker_b in enumerate(speaker_df["Speaker_ID"]):
+            if i == j:
+                continue
+            text_b = speaker_texts.get(speaker_b, "")
+            sim = calculate_similarity(text_a, text_b)
+            if sim is not None:
+                sims.append(sim)
+                similarity_values.append(sim)
+
+        speaker_df.loc[speaker_df["Speaker_ID"] == speaker_a, "Avg_Similarity_To_Others"] = (
+            float(np.mean(sims)) if sims else None
+        )
+
+    # Calculate pairwise keyword overlap (averaged per speaker)
+    overlap_values = []
+    for i, speaker_a in enumerate(speaker_df["Speaker_ID"]):
+        text_a = speaker_texts.get(speaker_a, "")
+        overlaps = []
+        for j, speaker_b in enumerate(speaker_df["Speaker_ID"]):
+            if i == j:
+                continue
+            text_b = speaker_texts.get(speaker_b, "")
+            overlap = keyword_overlap(text_a, text_b)
+            overlaps.append(overlap)
+            overlap_values.append(overlap)
+
+        speaker_df.loc[speaker_df["Speaker_ID"] == speaker_a, "Avg_Keyword_Overlap"] = (
+            float(np.mean(overlaps)) if overlaps else None
+        )
+
+    # Conversation-level summary
+    conv = {
+        "Audio_File": Path(audio_file).name,
+        "Num_Speakers": len(speaker_texts),
+        "Avg_Similarity": float(np.mean(similarity_values)) if similarity_values else None,
+        "Avg_Keyword_Overlap": float(np.mean(overlap_values)) if overlap_values else None,
+        "Sentiment_Mean": float(np.nanmean([r["Sentiment_Score"] for r in rows if r.get("Sentiment_Score") is not None])) if any(r.get("Sentiment_Score") is not None for r in rows) else None,
+        "Sentiment_Std": float(np.nanstd([r["Sentiment_Score"] for r in rows if r.get("Sentiment_Score") is not None])) if any(r.get("Sentiment_Score") is not None for r in rows) else None,
+        "Speaker_Sentiments": json.dumps({r["Speaker_ID"]: {"label": r["Sentiment_Label"], "score": r["Sentiment_Score"], "confidence": r["Sentiment_Confidence"]} for r in rows}),
+    }
+    conv_df = pd.DataFrame([conv])
+
+    # Save Excel files (optional)
+    speaker_excel = Path(output_dir) / "consolidated_results.xlsx"
+    conversation_excel = Path(output_dir) / "consolidated_conversation_summary.xlsx"
+
+    try:
+        speaker_df.to_excel(speaker_excel, index=False)
+        conv_df.to_excel(conversation_excel, index=False)
+        print(f"✓ Analysis results saved: {speaker_excel}", flush=True)
+        print(f"✓ Conversation summary saved: {conversation_excel}", flush=True)
+    except Exception as e:
+        print(f"⚠️ Could not save Excel output (openpyxl might be missing): {e}", flush=True)
+
+    # Always save CSV for compatibility
+    speaker_df.to_csv(Path(output_dir) / "consolidated_results.csv", index=False)
+    conv_df.to_csv(Path(output_dir) / "consolidated_conversation_summary.csv", index=False)
+    print(f"✓ CSV output saved to {output_dir}", flush=True)
+
+
 import time
 from datetime import datetime
 from pathlib import Path
 import json
+import numpy as np
 import librosa
 import soundfile as sf
 
 # Detect device: use CUDA if available, otherwise CPU
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
+
+# Analysis model references (loaded later)
+emotion_classifier = None
+sentiment_tokenizer = None
+sentiment_model = None
+similarity_model = None
+
+# Cached sentence embeddings for similarity
+_similarity_embeddings = {}
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="WhisperX transcription with speaker diarization")
@@ -116,6 +381,9 @@ print(f"Number of segments: {len(result.get('segments', []))}")
 
 # delete model if low on GPU resources
 gc.collect(); torch.cuda.empty_cache(); del model
+
+# Load analysis models (emotion, sentiment, similarity)
+load_analysis_models(device=device)
 
 # 2. Align whisper output
 model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
@@ -254,6 +522,12 @@ try:
             sf.write(clip_file, audio_clip, sr)
         
         print(f"✓ Saved {len(segments)} audio clips for {speaker}", flush=True)
+    
+    # Generate analysis outputs (emotion, sentiment, similarity) and save Excel/CSV files
+    try:
+        save_analysis_results(output_dir, audio_file, speaker_segments)
+    except Exception as e:
+        print(f"✗ Error generating analysis outputs: {e}", flush=True)
     
     print(f"\n✓ All results saved to: {output_dir.absolute()}", flush=True)
     

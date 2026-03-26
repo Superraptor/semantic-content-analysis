@@ -12,11 +12,19 @@
 # 2) Install dependencies from requirements.txt:
 #        pip install -r requirements.txt
 #
-# 3) Run the script:
+# 3) Download models for offline use (optional, but recommended for offline runs):
+#        python offline_whisperX.py
+#
+# 4) Run the script:
 #        python whisperX.py <path_to_audio.wav>
 #
+# 5) For subsequent offline runs (after downloading models):
+#        python whisperX.py --offline <path_to_audio.wav>
+#
 # Notes:
-#  - The first run may download large models (SpeechBrain, SentenceTransformers, etc.).
+#  - Use offline_whisperX.py to pre-cache all models before running with audio files.
+#  - The first run or offline_whisperX.py may download large models (WhisperX, SpeechBrain, SentenceTransformers, etc.).
+#  - Use --offline flag for runs without internet access (after models are cached).
 #  - If you want to re-run with a clean environment, delete the .venv folder and repeat step 1.
 # -----------------------------------------------------------------------------
 
@@ -30,7 +38,7 @@ import sys
 import os
 
 import pandas as pd
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
 from sentence_transformers import SentenceTransformer, util
 from speechbrain.pretrained import EncoderClassifier
 from textblob import TextBlob
@@ -66,68 +74,111 @@ def allow_pickle_load():
         cloud_io.torch.load = original_torch_load
 
 
-def load_analysis_models(device="cpu"):
+def load_analysis_models(device="cpu", offline=False):
     """Load models used for emotion, sentiment, and similarity scoring."""
-    global emotion_classifier, sentiment_tokenizer, sentiment_model, similarity_model
+    global emotion_model, emotion_feature_extractor, sentiment_tokenizer, sentiment_model, similarity_model
 
-    # Emotion (SpeechBrain)
+    local_files_only = offline
+
+    # Emotion (HuggingFace Wav2Vec2, matching paralinguistics_analysis.py)
     try:
-        print("Loading SpeechBrain emotion model...", flush=True)
-        emotion_classifier = EncoderClassifier.from_hparams(
-            source="speechbrain/emotion-recognition-wav2vec2",
-            savedir="pretrained_models/emotion",
-            run_opts={"device": device}
+        print("Loading emotion model...", flush=True)
+        emotion_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+            "superb/wav2vec2-large-superb-er",
+            local_files_only=local_files_only
         )
+        emotion_model = Wav2Vec2ForSequenceClassification.from_pretrained(
+            "superb/wav2vec2-large-superb-er",
+            local_files_only=local_files_only
+        )
+        emotion_model.eval()
+        if device == "cuda":
+            emotion_model.to(device)
         print("✓ Emotion model loaded", flush=True)
     except Exception as e:
-        print(f"✗ Emotion model failed to load: {e}", flush=True)
-        emotion_classifier = None
+        print(f"✗ Emotion model not available: {e}", flush=True)
+        print("Will use offline emotion detection", flush=True)
+        emotion_model = None
+        emotion_feature_extractor = None
 
-    # Sentiment (CardiffNLP)
+    # Sentiment (HuggingFace BERT, matching paralinguistics_analysis.py)
     try:
         print("Loading sentiment model...", flush=True)
-        sentiment_tokenizer = AutoTokenizer.from_pretrained("cardiffnlp/twitter-roberta-base-sentiment")
+        sentiment_tokenizer = AutoTokenizer.from_pretrained(
+            "nlptown/bert-base-multilingual-uncased-sentiment",
+            local_files_only=local_files_only
+        )
         sentiment_model = AutoModelForSequenceClassification.from_pretrained(
-            "cardiffnlp/twitter-roberta-base-sentiment"
+            "nlptown/bert-base-multilingual-uncased-sentiment",
+            local_files_only=local_files_only
         )
         sentiment_model.eval()
         if device == "cuda":
             sentiment_model.to(device)
         print("✓ Sentiment model loaded", flush=True)
     except Exception as e:
-        print(f"✗ Sentiment model failed to load: {e}", flush=True)
+        print(f"✗ Sentiment model not available: {e}", flush=True)
+        print("Will use offline sentiment analysis", flush=True)
         sentiment_tokenizer = None
         sentiment_model = None
 
-    # Similarity (SentenceTransformers)
+    # Similarity (SentenceTransformers, matching paralinguistics_analysis.py)
     try:
         print("Loading similarity model...", flush=True)
-        similarity_model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2", device=device)
+        similarity_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=device)
         print("✓ Similarity model loaded", flush=True)
     except Exception as e:
-        print(f"✗ Similarity model failed to load: {e}", flush=True)
+        print(f"✗ Similarity model not available: {e}", flush=True)
+        print("Will use offline similarity calculation", flush=True)
         similarity_model = None
 
 
 def predict_emotion_for_speaker(speaker_audio_dir):
     """Predict the predominant emotion for a speaker given their audio clips."""
-    if emotion_classifier is None:
+    if emotion_model is None or emotion_feature_extractor is None:
         return None
 
-    labels = []
+    emotions = []
     for wav_path in Path(speaker_audio_dir).glob("*.wav"):
         try:
-            out_prob, score, idx, text_lab = emotion_classifier.classify_file(str(wav_path))
-            if text_lab:
-                labels.append(text_lab[0])
+            # Load audio
+            y, sr = librosa.load(str(wav_path), sr=16000)
+
+            # Ensure correct sample rate
+            if sr != 16000:
+                y = librosa.resample(y, orig_sr=sr, target_sr=16000)
+                sr = 16000
+
+            # Limit to 10 seconds
+            max_samples = 10 * sr
+            if len(y) > max_samples:
+                y = y[:max_samples]
+
+            # Extract features
+            inputs = emotion_feature_extractor(y, sampling_rate=sr, return_tensors="pt", padding=True)
+            if device == "cuda":
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+
+            # Run model
+            with torch.no_grad():
+                outputs = emotion_model(**inputs)
+                logits = outputs.logits
+                predicted_idx = torch.argmax(logits, dim=-1).item()
+
+            # Map to emotion labels
+            emotion_labels = {0: "Neutral", 1: "Calm", 2: "Happy", 3: "Sad",
+                             4: "Angry", 5: "Fearful", 6: "Disgust", 7: "Surprised"}
+            emotion = emotion_labels.get(predicted_idx, "Neutral")
+            emotions.append(emotion)
+
         except Exception:
             continue
 
-    if not labels:
+    if not emotions:
         return None
 
     from collections import Counter
-    return Counter(labels).most_common(1)[0][0]
+    return Counter(emotions).most_common(1)[0][0]
 
 
 def analyze_sentiment_text(text):
@@ -141,15 +192,17 @@ def analyze_sentiment_text(text):
 
     with torch.no_grad():
         outputs = sentiment_model(**inputs)
-        probs = torch.softmax(outputs.logits, dim=-1)[0]
-        score, idx = torch.max(probs, dim=-1)
-        label = sentiment_model.config.id2label.get(idx.item(), None)
+        scores = torch.softmax(outputs.logits, dim=-1)[0]
 
-    # Map to 1-5 scale (negative=1, neutral=3, positive=5)
-    mapping = {"LABEL_0": 1.0, "LABEL_1": 3.0, "LABEL_2": 5.0}
-    numeric = mapping.get(label, None)
+    # Compute weighted sentiment score (1-5 scale, matching paralinguistics_analysis.py)
+    sentiment_score = (scores[0] * 1 + scores[1] * 2 + scores[2] * 3 + scores[3] * 4 + scores[4] * 5).item()
+    confidence = scores.max().item()
 
-    return {"label": label, "confidence": float(score), "score": numeric}
+    # Get label
+    predicted_idx = torch.argmax(scores).item()
+    label = sentiment_model.config.id2label.get(f"LABEL_{predicted_idx}", None)
+
+    return {"label": label, "confidence": confidence, "score": sentiment_score}
 
 
 def _get_sentence_embedding(text):
@@ -305,7 +358,8 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
 # Analysis model references (loaded later)
-emotion_classifier = None
+emotion_model = None
+emotion_feature_extractor = None
 sentiment_tokenizer = None
 sentiment_model = None
 similarity_model = None
@@ -322,6 +376,8 @@ parser.add_argument("--num-speakers", type=int, default=2,
                    help="Expected number of speakers (default: 2, use None for auto-detect)")
 parser.add_argument("--output-dir", type=str, default=None,
                    help="Custom output directory (default: transcription_output_<timestamp>)")
+parser.add_argument("--offline", action="store_true",
+                   help="Run in offline mode (use only locally cached models, no downloads)")
 
 args = parser.parse_args()
 
@@ -383,7 +439,7 @@ print(f"Number of segments: {len(result.get('segments', []))}")
 gc.collect(); torch.cuda.empty_cache(); del model
 
 # Load analysis models (emotion, sentiment, similarity)
-load_analysis_models(device=device)
+load_analysis_models(device=device, offline=args.offline)
 
 # 2. Align whisper output
 model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)

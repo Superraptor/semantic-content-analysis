@@ -39,6 +39,10 @@ os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
 os.environ["TORCH_HOME"] = CACHE_DIR
 if args.offline:
     os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+    os.environ["HF_METRICS_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 
 REPO_REQUIRED_FILES = {
@@ -129,12 +133,13 @@ def download_model_manual(repo_id, model_name):
         print(f"✗ Offline mode enabled and cache is incomplete for: {repo_id}")
         return False
 
+    local_only = args.offline
     try:
         print("\nAttempt 1: Using snapshot_download with resume...")
         cache_dir = snapshot_download(
             repo_id=repo_id,
             resume_download=True,
-            local_files_only=False,
+            local_files_only=local_only,
             cache_dir=CACHE_DIR,
             ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx"],
         )
@@ -170,7 +175,12 @@ def download_model_manual(repo_id, model_name):
 
             for filename in files_to_download:
                 try:
-                    hf_hub_download(repo_id=repo_id, filename=filename, cache_dir=CACHE_DIR)
+                    hf_hub_download(
+                        repo_id=repo_id,
+                        filename=filename,
+                        cache_dir=CACHE_DIR,
+                        local_files_only=local_only,
+                    )
                     print(f"  ✓ {filename}")
                 except Exception:
                     print(f"  ⚠ {filename} - skipped or not available")
@@ -179,7 +189,13 @@ def download_model_manual(repo_id, model_name):
             for model_file in model_files:
                 try:
                     print(f"\n  Downloading {model_file} (this may take a while)...")
-                    hf_hub_download(repo_id=repo_id, filename=model_file, resume_download=True, cache_dir=CACHE_DIR)
+                    hf_hub_download(
+                        repo_id=repo_id,
+                        filename=model_file,
+                        resume_download=True,
+                        cache_dir=CACHE_DIR,
+                        local_files_only=local_only,
+                    )
                     print(f"  ✓ {model_file}")
                     weights_downloaded = True
                     break

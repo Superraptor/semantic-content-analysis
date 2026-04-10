@@ -63,10 +63,10 @@ REPO_REQUIRED_FILES = {
         "preprocessor_config.json",
     ],
     "nlptown/bert-base-multilingual-uncased-sentiment": [
-        "pytorch_model.bin",
+        ("pytorch_model.bin", "model.safetensors"),
         "config.json",
         "tokenizer_config.json",
-        "vocab.txt",
+        ("vocab.txt", "vocab.json"),
     ],
     "sentence-transformers/all-MiniLM-L6-v2": [
         ("pytorch_model.bin", "model.safetensors"),

@@ -32,6 +32,79 @@ os.environ["HF_HOME"] = CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
 os.environ["TORCH_HOME"] = CACHE_DIR
 
+REPO_REQUIRED_FILES = {
+    "Systran/faster-whisper-small.en": [
+        "model.bin",
+        "config.json",
+        "tokenizer.json",
+        "vocabulary.txt",
+    ],
+    "jonatasgrosman/wav2vec2-large-xlsr-53-english": [
+        "pytorch_model.bin",
+        "config.json",
+        "vocab.json",
+        "tokenizer_config.json",
+    ],
+    "superb/wav2vec2-large-superb-er": [
+        "pytorch_model.bin",
+        "config.json",
+        "tokenizer_config.json",
+        "vocab.json",
+    ],
+    "nlptown/bert-base-multilingual-uncased-sentiment": [
+        "pytorch_model.bin",
+        "config.json",
+        "tokenizer_config.json",
+        "vocab.txt",
+    ],
+    "sentence-transformers/all-MiniLM-L6-v2": [
+        ("pytorch_model.bin", "model.safetensors"),
+        "config.json",
+        "tokenizer_config.json",
+        "tokenizer.json",
+    ],
+    "pyannote/speaker-diarization-3.1": [
+        "config.yaml",
+    ],
+    "pyannote/segmentation-3.0": [
+        "config.yaml",
+        "pytorch_model.bin",
+    ],
+    "pyannote/wespeaker-voxceleb-resnet34-LM": [
+        "config.yaml",
+        "pytorch_model.bin",
+    ],
+}
+
+def _file_group_exists(snapshot_dir, required):
+    from pathlib import Path
+    if isinstance(required, (list, tuple)):
+        return any((snapshot_dir / f).exists() for f in required)
+    return (snapshot_dir / required).exists()
+
+
+def is_repo_cached(repo_id):
+    from pathlib import Path
+
+    cache_path = Path(CACHE_DIR) / f"models--{repo_id.replace('/', '--')}"
+    if not cache_path.exists():
+        return False
+
+    snapshots_dir = cache_path / "snapshots"
+    if not snapshots_dir.exists():
+        return False
+
+    snapshot_dirs = [p for p in snapshots_dir.iterdir() if p.is_dir()]
+    if not snapshot_dirs:
+        return False
+
+    snapshot_dir = snapshot_dirs[0]
+    required_files = REPO_REQUIRED_FILES.get(repo_id, [])
+    if not required_files:
+        return False
+
+    return all(_file_group_exists(snapshot_dir, required) for required in required_files)
+
 
 def download_model_manual(repo_id, model_name):
     """Download a model repository using Hugging Face snapshot download."""
@@ -39,6 +112,10 @@ def download_model_manual(repo_id, model_name):
     print(f"Downloading: {model_name}")
     print(f"Repository: {repo_id}")
     print(f"{'='*60}")
+
+    if is_repo_cached(repo_id):
+        print(f"✓ Already cached: {repo_id}")
+        return True
 
     try:
         print("\nAttempt 1: Using snapshot_download with resume...")

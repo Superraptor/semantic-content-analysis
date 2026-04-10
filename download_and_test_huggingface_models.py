@@ -58,7 +58,7 @@ REPO_REQUIRED_FILES = {
         "vocab.json",
     ],
     "superb/wav2vec2-large-superb-er": [
-        "pytorch_model.bin",
+        ("pytorch_model.bin", "model.safetensors"),
         "config.json",
         "tokenizer_config.json",
         "vocab.json",
@@ -106,16 +106,19 @@ def is_repo_cached(repo_id):
     if not snapshots_dir.exists():
         return False
 
-    snapshot_dirs = [p for p in snapshots_dir.iterdir() if p.is_dir()]
+    snapshot_dirs = sorted([p for p in snapshots_dir.iterdir() if p.is_dir()])
     if not snapshot_dirs:
         return False
 
-    snapshot_dir = snapshot_dirs[0]
     required_files = REPO_REQUIRED_FILES.get(repo_id, [])
     if not required_files:
         return False
 
-    return all(_file_group_exists(snapshot_dir, required) for required in required_files)
+    for snapshot_dir in snapshot_dirs:
+        if all(_file_group_exists(snapshot_dir, required) for required in required_files):
+            return True
+
+    return False
 
 
 def download_model_manual(repo_id, model_name):
@@ -423,18 +426,23 @@ def _check_model_cache(repo_id, required_files):
         print(f"✗ Snapshots directory not found: {snapshots_dir}")
         return False
 
-    snapshot_dirs = [p for p in snapshots_dir.iterdir() if p.is_dir()]
+    snapshot_dirs = sorted([p for p in snapshots_dir.iterdir() if p.is_dir()])
     if not snapshot_dirs:
         print(f"✗ No snapshot folders found in: {snapshots_dir}")
         return False
 
-    snapshot_dir = snapshot_dirs[0]
-    missing_files = [f for f in required_files if not (snapshot_dir / f).exists()]
-    if missing_files:
-        print(f"✗ Missing files for {repo_id} in: {snapshot_dir}")
-        for f in missing_files:
-            print(f"  Missing: {f}")
-        return False
+    for snapshot_dir in snapshot_dirs:
+        missing_files = [f for f in required_files if not _file_group_exists(snapshot_dir, f)]
+        if not missing_files:
+            print(f"✓ Cached {repo_id}: {required_files} in snapshot {snapshot_dir.name}")
+            return True
+
+    print(f"✗ Missing files for {repo_id} in all snapshots under: {snapshots_dir}")
+    for snapshot_dir in snapshot_dirs:
+        present = [f for f in required_files if _file_group_exists(snapshot_dir, f)]
+        missing = [f for f in required_files if f not in present]
+        print(f"  Snapshot {snapshot_dir.name}: present={present} missing={missing}")
+    return False
 
     print(f"✓ Cached {repo_id}: {required_files}")
     return True

@@ -47,7 +47,7 @@ if args.offline:
 
 REPO_REQUIRED_FILES = {
     "Systran/faster-whisper-small.en": [
-        "model.bin",
+        ("model.bin", "pytorch_model.bin", "model.safetensors"),
         "config.json",
         "tokenizer.json",
         "vocabulary.txt",
@@ -366,20 +366,18 @@ def test_whisper_model(repo_id):
             # Check if snapshots directory exists
             snapshots_dir = os.path.join(cache_path, "snapshots")
             if os.path.exists(snapshots_dir):
-                snapshots = os.listdir(snapshots_dir)
+                snapshots = [d for d in os.listdir(snapshots_dir) if os.path.isdir(os.path.join(snapshots_dir, d))]
                 if snapshots:
-                    snapshot_dir = os.path.join(snapshots_dir, snapshots[0])
-                    # Check for model files
                     model_files = ["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"]
-                    found_files = [f for f in model_files if os.path.exists(os.path.join(snapshot_dir, f))]
-                    
-                    if found_files:
-                        print(f"✓ Model files found in cache: {found_files}")
-                        print(f"  Cache location: {snapshot_dir}")
-                        return True
-                    else:
-                        print(f"⚠ Cache directory exists but model files missing: {snapshot_dir}")
-                        return False
+                    for snapshot_name in snapshots:
+                        snapshot_dir = os.path.join(snapshots_dir, snapshot_name)
+                        found_files = [f for f in model_files if os.path.exists(os.path.join(snapshot_dir, f))]
+                        if len(found_files) == len(model_files):
+                            print(f"✓ Model files found in cache: {found_files}")
+                            print(f"  Cache location: {snapshot_dir}")
+                            return True
+                    print(f"⚠ Cache directory exists but model files missing in all snapshots: {snapshots_dir}")
+                    return False
                 else:
                     print(f"⚠ Cache directory exists but no snapshots: {snapshots_dir}")
                     return False

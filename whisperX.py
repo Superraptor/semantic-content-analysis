@@ -13,7 +13,7 @@
 #        pip install -r requirements.txt
 #
 # 3) Download models for offline use (optional, but recommended for offline runs):
-#        python offline_whisperX.py
+#        python download_and_test_huggingface_models.py
 #
 # 4) Run the script:
 #        python whisperX.py <path_to_audio.wav>
@@ -22,25 +22,41 @@
 #        python whisperX.py --offline <path_to_audio.wav>
 #
 # Notes:
-#  - Use offline_whisperX.py to pre-cache all models before running with audio files.
-#  - The first run or offline_whisperX.py may download large models (WhisperX, SpeechBrain, SentenceTransformers, etc.).
+#  - Use download_and_test_huggingface_models.py to pre-cache all models before running with audio files.
+#  - The first run or download_and_test_huggingface_models.py may download large models (WhisperX, SpeechBrain, SentenceTransformers, etc.).
 #  - Use --offline flag for runs without internet access (after models are cached).
 #  - If you want to re-run with a clean environment, delete the .venv folder and repeat step 1.
 # -----------------------------------------------------------------------------
+
+import os
+import sys
+import argparse
+
+CACHE_DIR = r"D:\huggingface\hub"
+os.environ["HF_HOME"] = CACHE_DIR
+os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+os.environ["TORCH_HOME"] = CACHE_DIR
+
+# Parse --offline early so all downstream imports honor offline mode.
+early_parser = argparse.ArgumentParser(add_help=False)
+early_parser.add_argument("--offline", action="store_true")
+early_args, _ = early_parser.parse_known_args()
+if early_args.offline:
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+    os.environ["HF_METRICS_OFFLINE"] = "1"
 
 import whisperx
 import gc
 import torch
 import warnings
 from contextlib import contextmanager
-import argparse
-import sys
-import os
 
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
 from sentence_transformers import SentenceTransformer, util
-from speechbrain.pretrained import EncoderClassifier
+from speechbrain.inference import EncoderClassifier
 from textblob import TextBlob
 
 # Suppress warnings
@@ -85,11 +101,13 @@ def load_analysis_models(device="cpu", offline=False):
         print("Loading emotion model...", flush=True)
         emotion_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
             "superb/wav2vec2-large-superb-er",
-            local_files_only=local_files_only
+            local_files_only=local_files_only,
+            cache_dir=CACHE_DIR,
         )
         emotion_model = Wav2Vec2ForSequenceClassification.from_pretrained(
             "superb/wav2vec2-large-superb-er",
-            local_files_only=local_files_only
+            local_files_only=local_files_only,
+            cache_dir=CACHE_DIR,
         )
         emotion_model.eval()
         if device == "cuda":
@@ -106,11 +124,13 @@ def load_analysis_models(device="cpu", offline=False):
         print("Loading sentiment model...", flush=True)
         sentiment_tokenizer = AutoTokenizer.from_pretrained(
             "nlptown/bert-base-multilingual-uncased-sentiment",
-            local_files_only=local_files_only
+            local_files_only=local_files_only,
+            cache_dir=CACHE_DIR,
         )
         sentiment_model = AutoModelForSequenceClassification.from_pretrained(
             "nlptown/bert-base-multilingual-uncased-sentiment",
-            local_files_only=local_files_only
+            local_files_only=local_files_only,
+            cache_dir=CACHE_DIR,
         )
         sentiment_model.eval()
         if device == "cuda":
@@ -125,8 +145,29 @@ def load_analysis_models(device="cpu", offline=False):
     # Similarity (SentenceTransformers, matching paralinguistics_analysis.py)
     try:
         print("Loading similarity model...", flush=True)
-        similarity_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=device)
-        print("✓ Similarity model loaded", flush=True)
+        if offline:
+            # For offline mode, load from local cache path
+            snapshots_dir = os.path.join(CACHE_DIR, "models--sentence-transformers--all-MiniLM-L6-v2", "snapshots")
+            if os.path.exists(snapshots_dir):
+                # Find the snapshot directory
+                snapshot_dirs = [d for d in os.listdir(snapshots_dir) if os.path.isdir(os.path.join(snapshots_dir, d))]
+                if snapshot_dirs:
+                    model_path = os.path.join(snapshots_dir, snapshot_dirs[0])
+                    similarity_model = SentenceTransformer(model_path, device=device)
+                    print("✓ Similarity model loaded from cache", flush=True)
+                else:
+                    print(f"⚠ No snapshot directories found in: {snapshots_dir}", flush=True)
+                    similarity_model = None
+            else:
+                print(f"⚠ Similarity model snapshots not found: {snapshots_dir}", flush=True)
+                similarity_model = None
+        else:
+            similarity_model = SentenceTransformer(
+                "sentence-transformers/all-MiniLM-L6-v2",
+                device=device,
+                cache_folder=CACHE_DIR,
+            )
+            print("✓ Similarity model loaded", flush=True)
     except Exception as e:
         print(f"✗ Similarity model not available: {e}", flush=True)
         print("Will use offline similarity calculation", flush=True)
@@ -381,6 +422,10 @@ parser.add_argument("--offline", action="store_true",
 
 args = parser.parse_args()
 
+# Set offline mode if requested
+if args.offline:
+    os.environ["HF_HUB_OFFLINE"] = "1"
+
 # Validate audio file exists
 audio_file = args.audio_file
 if not os.path.exists(audio_file):
@@ -404,7 +449,7 @@ print(f"  Model: {args.model}", flush=True)
 print(f"  Device: {device}, Compute type: {compute_type}", flush=True)
 try:
     with allow_pickle_load():
-        model = whisperx.load_model(args.model, device, compute_type=compute_type)
+        model = whisperx.load_model(args.model, device, compute_type=compute_type, download_root=CACHE_DIR)
     print("✓ Model loaded successfully", flush=True)
 except Exception as e:
     print(f"✗ Model loading failed: {e}", flush=True)
@@ -442,7 +487,7 @@ gc.collect(); torch.cuda.empty_cache(); del model
 load_analysis_models(device=device, offline=args.offline)
 
 # 2. Align whisper output
-model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
+model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device, model_dir=CACHE_DIR)
 result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
 
 # print(result["segments"]) # after alignment
@@ -455,7 +500,7 @@ from whisperx.diarize import DiarizationPipeline
 print("Loading diarization model...", flush=True)
 try:
     with allow_pickle_load():
-        diarize_model = DiarizationPipeline(use_auth_token=True, device=device)
+        diarize_model = DiarizationPipeline(use_auth_token=False, device=device)
     print("✓ Diarization model loaded successfully", flush=True)
 except Exception as e:
     print(f"✗ Diarization model loading failed: {e}", flush=True)

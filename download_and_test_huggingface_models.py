@@ -15,6 +15,7 @@ USAGE:
     python download_and_test_huggingface_models.py
 """
 
+import argparse
 import os
 from huggingface_hub import snapshot_download, hf_hub_download
 from transformers import (
@@ -27,10 +28,18 @@ from transformers import (
 )
 import torch
 
-CACHE_DIR = r"D:\huggingface\hub"
+parser = argparse.ArgumentParser(description="Download and test HuggingFace models for WhisperX")
+parser.add_argument("--cache-dir", default=r"D:\huggingface\hub", help="Local HuggingFace cache directory")
+parser.add_argument("--offline", action="store_true", help="Use only cached model files; do not connect to Hugging Face")
+args = parser.parse_args()
+
+CACHE_DIR = args.cache_dir
 os.environ["HF_HOME"] = CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
 os.environ["TORCH_HOME"] = CACHE_DIR
+if args.offline:
+    os.environ["HF_HUB_OFFLINE"] = "1"
+
 
 REPO_REQUIRED_FILES = {
     "Systran/faster-whisper-small.en": [
@@ -43,7 +52,6 @@ REPO_REQUIRED_FILES = {
         "pytorch_model.bin",
         "config.json",
         "vocab.json",
-        "tokenizer_config.json",
     ],
     "superb/wav2vec2-large-superb-er": [
         "pytorch_model.bin",
@@ -116,6 +124,10 @@ def download_model_manual(repo_id, model_name):
     if is_repo_cached(repo_id):
         print(f"✓ Already cached: {repo_id}")
         return True
+
+    if args.offline:
+        print(f"✗ Offline mode enabled and cache is incomplete for: {repo_id}")
+        return False
 
     try:
         print("\nAttempt 1: Using snapshot_download with resume...")

@@ -60,8 +60,7 @@ REPO_REQUIRED_FILES = {
     "superb/wav2vec2-large-superb-er": [
         ("pytorch_model.bin", "model.safetensors"),
         "config.json",
-        "tokenizer_config.json",
-        "vocab.json",
+        "preprocessor_config.json",
     ],
     "nlptown/bert-base-multilingual-uncased-sentiment": [
         "pytorch_model.bin",

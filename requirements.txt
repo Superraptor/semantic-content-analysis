@@ -1,27 +1,29 @@
 ffmpeg>=1.4
-librosa>=0.10.0
-nltk>=3.9.0
-pyannote-audio>=3.3.2
-pydub>=0.25.0
-python-certifi-win32>=1.6.0
-scipy>=1.10.0
-textblob>=0.18.0
+librosa>=0.11.0
+nltk>=3.9.2
+pyannote-audio>=3.4.0
+pydub>=0.25.1
+python-certifi-win32>=1.6.1
+scipy>=1.15.3
+textblob>=0.19.0
 torch>=2.8.0
-transformers>=4.48.0
+transformers>=4.57.6
 vosk>=0.3.45
 webrtcvad>=2.0.10
-speechbrain>=1.0.0
-hdbscan>=0.8.32
-soundfile>=0.12.0
-scikit-learn>=1.0.0
-pyannote.metrics>=3.2
+speechbrain>=1.0.3
+hdbscan>=0.8.41
+soundfile>=0.13.1
+scikit-learn>=1.7.2
+pyannote.metrics>=3.2.1
+faster-whisper>=1.2.1
+sentencepiece>=0.2.1
 whisperx @ git+https://github.com/m-bain/whisperx.git
-huggingface-hub>=0.24.0
+huggingface-hub>=0.36.0
 omegaconf>=2.3.0
 torchaudio>=2.8.0
 
 # Required for analysis outputs
-pandas>=2.0.0
-numpy>=1.26.0
-sentence-transformers>=2.2.0
-openpyxl>=3.1.0
+pandas>=2.3.3
+numpy>=2.2.6
+sentence-transformers>=5.2.3
+openpyxl>=3.1.5

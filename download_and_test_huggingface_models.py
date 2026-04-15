@@ -67,6 +67,7 @@ REPO_REQUIRED_FILES = {
         "config.json",
         "tokenizer_config.json",
         ("vocab.txt", "vocab.json"),
+        "special_tokens_map.json",
     ],
     "sentence-transformers/all-MiniLM-L6-v2": [
         ("pytorch_model.bin", "model.safetensors"),
@@ -118,6 +119,25 @@ def is_repo_cached(repo_id):
             return True
 
     return False
+
+
+def get_cached_snapshot_dir(repo_id):
+    from pathlib import Path
+
+    cache_path = Path(CACHE_DIR) / f"models--{repo_id.replace('/', '--')}"
+    snapshots_dir = cache_path / "snapshots"
+    if not snapshots_dir.exists():
+        return None
+
+    required_files = REPO_REQUIRED_FILES.get(repo_id, [])
+    if not required_files:
+        return None
+
+    for snapshot_dir in sorted([p for p in snapshots_dir.iterdir() if p.is_dir()]):
+        if all(_file_group_exists(snapshot_dir, required) for required in required_files):
+            return snapshot_dir
+
+    return None
 
 
 def download_model_manual(repo_id, model_name):
@@ -227,13 +247,20 @@ def test_similarity_model():
 
     try:
         print("Loading sentence-transformers/all-MiniLM-L6-v2...")
+        similarity_snapshot = get_cached_snapshot_dir("sentence-transformers/all-MiniLM-L6-v2")
+        if similarity_snapshot is not None:
+            print(f"Using cached snapshot path: {similarity_snapshot}")
+            pretrained_source = str(similarity_snapshot)
+        else:
+            pretrained_source = "sentence-transformers/all-MiniLM-L6-v2"
+
         tokenizer = AutoTokenizer.from_pretrained(
-            "sentence-transformers/all-MiniLM-L6-v2",
+            pretrained_source,
             local_files_only=True,
             cache_dir=CACHE_DIR,
         )
         model = AutoModel.from_pretrained(
-            "sentence-transformers/all-MiniLM-L6-v2",
+            pretrained_source,
             local_files_only=True,
             cache_dir=CACHE_DIR,
         )
@@ -260,13 +287,20 @@ def test_sentiment_model():
 
     try:
         print("Loading nlptown/bert-base-multilingual-uncased-sentiment...")
+        sentiment_snapshot = get_cached_snapshot_dir("nlptown/bert-base-multilingual-uncased-sentiment")
+        if sentiment_snapshot is not None:
+            print(f"Using cached snapshot path: {sentiment_snapshot}")
+            pretrained_source = str(sentiment_snapshot)
+        else:
+            pretrained_source = "nlptown/bert-base-multilingual-uncased-sentiment"
+
         tokenizer = AutoTokenizer.from_pretrained(
-            "nlptown/bert-base-multilingual-uncased-sentiment",
+            pretrained_source,
             local_files_only=True,
             cache_dir=CACHE_DIR,
         )
         model = AutoModelForSequenceClassification.from_pretrained(
-            "nlptown/bert-base-multilingual-uncased-sentiment",
+            pretrained_source,
             local_files_only=True,
             cache_dir=CACHE_DIR,
         )
@@ -297,14 +331,21 @@ def test_emotion_recognition_model():
 
     try:
         print("Loading superb/wav2vec2-large-superb-er...")
+        emotion_snapshot = get_cached_snapshot_dir("superb/wav2vec2-large-superb-er")
+        if emotion_snapshot is not None:
+            print(f"Using cached snapshot path: {emotion_snapshot}")
+            pretrained_source = str(emotion_snapshot)
+        else:
+            pretrained_source = "superb/wav2vec2-large-superb-er"
+
         feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
-            "superb/wav2vec2-large-superb-er",
+            pretrained_source,
             local_files_only=True,
             cache_dir=CACHE_DIR,
         )
         print("✓ Feature extractor loaded")
         model = Wav2Vec2ForSequenceClassification.from_pretrained(
-            "superb/wav2vec2-large-superb-er",
+            pretrained_source,
             local_files_only=True,
             cache_dir=CACHE_DIR,
         )

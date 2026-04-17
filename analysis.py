@@ -32,7 +32,7 @@ import os
 import sys
 import argparse
 
-CACHE_DIR = r"D:\huggingface\hub"
+CACHE_DIR = r"C:\huggingface\hub"
 os.environ["HF_HOME"] = CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
 os.environ["TORCH_HOME"] = CACHE_DIR
@@ -56,7 +56,7 @@ from contextlib import contextmanager
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
 from sentence_transformers import SentenceTransformer, util
-from speechbrain.inference import EncoderClassifier
+from speechbrain.pretrained import EncoderClassifier
 from textblob import TextBlob
 from pyannote.audio import Pipeline as PyannotePipeline
 

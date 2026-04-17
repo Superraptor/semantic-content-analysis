@@ -6,3 +6,5 @@ vosk-model-en-us-0.22.zip
 .vscode
 settings.json
 *.wav
+.venv
+transcription_output*

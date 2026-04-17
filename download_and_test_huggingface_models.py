@@ -30,7 +30,7 @@ from transformers import (
 import torch
 
 parser = argparse.ArgumentParser(description="Download and test HuggingFace models for WhisperX")
-parser.add_argument("--cache-dir", default=r"D:\huggingface\hub", help="Local HuggingFace cache directory")
+parser.add_argument("--cache-dir", default=r"C:\huggingface\hub", help="Local HuggingFace cache directory")
 parser.add_argument("--offline", action="store_true", help="Use only cached model files; do not connect to Hugging Face")
 parser.add_argument("--hf-token", default=None, help="Hugging Face token to use for gated model downloads")
 args = parser.parse_args()

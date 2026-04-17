@@ -17,7 +17,7 @@ scikit-learn>=1.7.2
 pyannote.metrics>=3.2.1
 faster-whisper>=1.2.1
 sentencepiece>=0.2.1
-whisperx @ git+https://github.com/m-bain/whisperx.git
+whisperx==3.8
 huggingface-hub>=0.36.0
 omegaconf>=2.3.0
 torchaudio>=2.8.0

@@ -58,6 +58,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, Wav2
 from sentence_transformers import SentenceTransformer, util
 from speechbrain.inference import EncoderClassifier
 from textblob import TextBlob
+from pyannote.audio import Pipeline as PyannotePipeline
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -88,6 +89,115 @@ def allow_pickle_load():
     finally:
         torch.load = original_torch_load
         cloud_io.torch.load = original_torch_load
+
+
+def get_cached_hf_snapshot_path(repo_id):
+    from pathlib import Path
+
+    cache_path = Path(CACHE_DIR) / f"models--{repo_id.replace('/', '--')}"
+    snapshots_dir = cache_path / "snapshots"
+    if not snapshots_dir.exists():
+        return None
+
+    snapshot_dirs = sorted([p for p in snapshots_dir.iterdir() if p.is_dir()])
+    return str(snapshot_dirs[0]) if snapshot_dirs else None
+
+
+def load_diarization_pipeline(model_name=None, token=None, device="cpu"):
+    """Load a pyannote diarization pipeline using the local HF cache."""
+    if isinstance(device, str):
+        device = torch.device(device)
+
+    model_config = model_name or "pyannote/speaker-diarization-community-1"
+    print(f"Loading diarization pipeline: {model_config}", flush=True)
+
+    from pathlib import Path
+    import yaml
+    from pyannote.audio.core.pipeline import expand_subfolders
+    from pyannote.core.utils.helper import get_class_by_name
+
+    def _resolve_local_path(repo_id):
+        path = get_cached_hf_snapshot_path(repo_id)
+        return Path(path) if path is not None else None
+
+    checkpoint_path = None
+    if isinstance(model_config, (str, Path)) and Path(model_config).exists():
+        checkpoint_path = Path(model_config)
+    else:
+        checkpoint_path = _resolve_local_path(model_config)
+
+    if checkpoint_path is not None and checkpoint_path.is_dir():
+        config_path = checkpoint_path / "config.yaml"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as fp:
+                config = yaml.safe_load(fp)
+
+            expand_subfolders(
+                config,
+                str(checkpoint_path),
+                parent_revision=None,
+                token=token,
+                cache_dir=CACHE_DIR,
+            )
+
+            pipeline_name = config["pipeline"]["name"]
+            Klass = get_class_by_name(pipeline_name, default_module_name="pyannote.pipeline.blocks")
+
+            params = config["pipeline"].get("params", {}).copy()
+            params.setdefault("token", token)
+            params.setdefault("cache_dir", CACHE_DIR)
+
+            if pipeline_name.endswith("SpeakerDiarization") and "plda" not in params:
+                community_plda_path = _resolve_local_path("pyannote/speaker-diarization-community-1")
+                if community_plda_path is not None:
+                    print("Using local community PLDA cache for diarization", flush=True)
+                    params["plda"] = {
+                        "checkpoint": str(community_plda_path),
+                        "subfolder": "plda",
+                    }
+                else:
+                    print(
+                        "⚠️ Local community PLDA cache not found. "
+                        "Offline diarization will fail unless pyannote/speaker-diarization-community-1 is cached.",
+                        flush=True,
+                    )
+                    params["plda"] = {
+                        "checkpoint": "pyannote/speaker-diarization-community-1",
+                        "subfolder": "plda",
+                    }
+
+            diarization_pipeline = Klass(**params)
+            pipeline_params = config.get("params", {}) or {}
+            if pipeline_params:
+                try:
+                    print("Instantiating diarization pipeline with config params...", flush=True)
+                    diarization_pipeline.instantiate(pipeline_params)
+                    print("✓ Diarization pipeline instantiated with config params", flush=True)
+                except Exception as e:
+                    print(
+                        "⚠ Failed to instantiate diarization pipeline with config params:",
+                        e,
+                        flush=True,
+                    )
+                    raise
+
+            diarization_pipeline._otel_origin = "local"
+            diarization_pipeline._otel_name = pipeline_name
+            diarization_pipeline.to(device)
+            return diarization_pipeline
+
+    # Fall back to normal HF pipeline loading when local config is not available
+    diarization_pipeline = PyannotePipeline.from_pretrained(
+        model_config,
+        token=token,
+        cache_dir=CACHE_DIR,
+    )
+
+    if diarization_pipeline is None:
+        raise RuntimeError(f"Could not load diarization pipeline: {model_config}")
+
+    diarization_pipeline.to(device)
+    return diarization_pipeline
 
 
 def load_analysis_models(device="cpu", offline=False):
@@ -496,11 +606,16 @@ result = whisperx.align(result["segments"], model_a, metadata, audio, device, re
 gc.collect(); torch.cuda.empty_cache(); del model_a
 
 # 3. Assign speaker labels
-from whisperx.diarize import DiarizationPipeline
 print("Loading diarization model...", flush=True)
 try:
+    model_name = get_cached_hf_snapshot_path("pyannote/speaker-diarization-3.1")
+    if model_name is not None:
+        print(f"Using cached diarization model path: {model_name}", flush=True)
+    else:
+        model_name = "pyannote/speaker-diarization-3.1"
+
     with allow_pickle_load():
-        diarize_model = DiarizationPipeline(use_auth_token=False, device=device)
+        diarize_model = load_diarization_pipeline(model_name=model_name, device=device)
     print("✓ Diarization model loaded successfully", flush=True)
 except Exception as e:
     print(f"✗ Diarization model loading failed: {e}", flush=True)
@@ -512,14 +627,33 @@ except Exception as e:
 print("Running speaker diarization...", flush=True)
 print(f"  Expected speakers: min={min_speakers}, max={max_speakers}", flush=True)
 try:
+    audio_tensor = torch.from_numpy(audio) if not torch.is_tensor(audio) else audio
+    if audio_tensor.ndim == 1:
+        audio_tensor = audio_tensor.unsqueeze(0)
+    elif audio_tensor.ndim > 2:
+        audio_tensor = audio_tensor.reshape(audio_tensor.shape[0], -1)
+
+    audio_input = {
+        "waveform": audio_tensor,
+        "sample_rate": 16000,
+    }
     with allow_pickle_load():
-        diarize_segments = diarize_model(audio, min_speakers=min_speakers, max_speakers=max_speakers)
+        diarize_segments = diarize_model(audio_input, min_speakers=min_speakers, max_speakers=max_speakers)
     print("✓ Diarization completed", flush=True)
 except Exception as e:
     print(f"✗ Diarization failed: {e}", flush=True)
     import traceback
     traceback.print_exc()
     exit(1)
+
+if hasattr(diarize_segments, "speaker_diarization"):
+    diarization = diarize_segments.speaker_diarization
+    diarize_segments = pd.DataFrame(
+        diarization.itertracks(yield_label=True),
+        columns=["segment", "label", "speaker"],
+    )
+    diarize_segments["start"] = diarize_segments["segment"].apply(lambda x: x.start)
+    diarize_segments["end"] = diarize_segments["segment"].apply(lambda x: x.end)
 
 result = whisperx.assign_word_speakers(diarize_segments, result)
 print("\nDiarization segments:")

@@ -10,6 +10,7 @@ This script downloads the following models required for WhisperX and related ana
 6. pyannote/speaker-diarization-3.1 (speaker diarization config)
 7. pyannote/segmentation-3.0 (diarization segmentation model)
 8. pyannote/wespeaker-voxceleb-resnet34-LM (diarization speaker embedding model)
+9. pyannote/speaker-diarization-community-1 (PLDA weights for offline diarization)
 
 USAGE:
     python download_and_test_huggingface_models.py
@@ -31,6 +32,7 @@ import torch
 parser = argparse.ArgumentParser(description="Download and test HuggingFace models for WhisperX")
 parser.add_argument("--cache-dir", default=r"D:\huggingface\hub", help="Local HuggingFace cache directory")
 parser.add_argument("--offline", action="store_true", help="Use only cached model files; do not connect to Hugging Face")
+parser.add_argument("--hf-token", default=None, help="Hugging Face token to use for gated model downloads")
 args = parser.parse_args()
 
 CACHE_DIR = args.cache_dir
@@ -43,6 +45,9 @@ if args.offline:
     os.environ["HF_DATASETS_OFFLINE"] = "1"
     os.environ["HF_METRICS_OFFLINE"] = "1"
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+if args.hf_token:
+    os.environ["HF_HUB_TOKEN"] = args.hf_token
+    os.environ["HF_TOKEN"] = args.hf_token
 
 
 REPO_REQUIRED_FILES = {
@@ -85,6 +90,11 @@ REPO_REQUIRED_FILES = {
     "pyannote/wespeaker-voxceleb-resnet34-LM": [
         "config.yaml",
         "pytorch_model.bin",
+    ],
+    "pyannote/speaker-diarization-community-1": [
+        "config.yaml",
+        "plda/xvec_transform.npz",
+        "plda/plda.npz",
     ],
 }
 
@@ -140,12 +150,40 @@ def get_cached_snapshot_dir(repo_id):
     return None
 
 
-def download_model_manual(repo_id, model_name):
+def _expand_required_filenames(required_files):
+    expanded = []
+    for required in required_files:
+        if isinstance(required, (list, tuple)):
+            expanded.extend(required)
+        else:
+            expanded.append(required)
+    return list(dict.fromkeys(expanded))
+
+
+def _download_with_token(callable_fn, *args, token=None, **kwargs):
+    try:
+        return callable_fn(*args, token=token, **kwargs)
+    except TypeError:
+        if token is not None:
+            kwargs["use_auth_token"] = token
+        if "token" in kwargs:
+            kwargs.pop("token")
+        return callable_fn(*args, **kwargs)
+
+
+def download_model_manual(repo_id, model_name, token=None):
     """Download a model repository using Hugging Face snapshot download."""
     print(f"\n{'='*60}")
     print(f"Downloading: {model_name}")
     print(f"Repository: {repo_id}")
     print(f"{'='*60}")
+
+    required_files = REPO_REQUIRED_FILES.get(repo_id, [])
+    token_to_use = token or os.environ.get("HF_HUB_TOKEN") or os.environ.get("HF_TOKEN")
+    if token_to_use:
+        print("Using HF auth token for gated repo access")
+    elif repo_id.startswith("pyannote/"):
+        print("WARNING: No HF token provided, gated pyannote repos may fail with 403")
 
     if is_repo_cached(repo_id):
         print(f"✓ Already cached: {repo_id}")
@@ -158,15 +196,22 @@ def download_model_manual(repo_id, model_name):
     local_only = args.offline
     try:
         print("\nAttempt 1: Using snapshot_download with resume...")
-        cache_dir = snapshot_download(
+        cache_dir = _download_with_token(
+            snapshot_download,
             repo_id=repo_id,
             resume_download=True,
             local_files_only=local_only,
             cache_dir=CACHE_DIR,
             ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx"],
+            token=token_to_use,
         )
         print(f"✓ Downloaded successfully to: {cache_dir}")
-        return True
+
+        if is_repo_cached(repo_id):
+            return True
+
+        print("⚠ Snapshot download completed but required model files are still missing. Falling back to individual file download...")
+        raise RuntimeError("Incomplete snapshot: required files missing")
 
     except Exception as e1:
         error_msg = str(e1)
@@ -181,59 +226,53 @@ def download_model_manual(repo_id, model_name):
             print("!"*60)
 
         try:
-            print("\nAttempt 2: Downloading files individually...")
-
-            files_to_download = [
-                "config.json",
-                "config.yaml",
-                "tokenizer_config.json",
-                "vocab.txt",
-                "tokenizer.json",
-                "special_tokens_map.json",
-                "preprocessor_config.json",
-                "vocab.json",
-            ]
-            model_files = ["pytorch_model.bin", "model.safetensors"]
+            print("\nAttempt 2: Downloading required files individually...")
+            files_to_download = _expand_required_filenames(required_files)
+            if not files_to_download:
+                files_to_download = [
+                    "config.json",
+                    "config.yaml",
+                    "tokenizer_config.json",
+                    "vocab.txt",
+                    "tokenizer.json",
+                    "special_tokens_map.json",
+                    "preprocessor_config.json",
+                    "vocab.json",
+                    "plda/xvec_transform.npz",
+                    "plda/plda.npz",
+                ]
 
             for filename in files_to_download:
                 try:
-                    hf_hub_download(
+                    _download_with_token(
+                        hf_hub_download,
                         repo_id=repo_id,
                         filename=filename,
                         cache_dir=CACHE_DIR,
                         local_files_only=local_only,
+                        token=token_to_use,
                     )
                     print(f"  ✓ {filename}")
                 except Exception:
                     print(f"  ⚠ {filename} - skipped or not available")
 
-            weights_downloaded = False
-            for model_file in model_files:
-                try:
-                    print(f"\n  Downloading {model_file} (this may take a while)...")
-                    hf_hub_download(
-                        repo_id=repo_id,
-                        filename=model_file,
-                        resume_download=True,
-                        cache_dir=CACHE_DIR,
-                        local_files_only=local_only,
-                    )
-                    print(f"  ✓ {model_file}")
-                    weights_downloaded = True
-                    break
-                except Exception as emf:
-                    print(f"  ⚠ {model_file} failed: {str(emf)[:100]}")
+            if is_repo_cached(repo_id):
+                return True
 
-            if not weights_downloaded and repo_id == "superb/wav2vec2-large-superb-er":
-                print("\n" + "!"*60)
-                print("MODEL WEIGHTS DOWNLOAD FAILED")
-                print("!"*60)
-                print("Config files downloaded, but pytorch_model.bin may be blocked by your firewall.")
-                print("See manual download instructions on the model page.")
-                print("!"*60)
+            print("\n⚠ Required files are still missing after individual download attempts.")
+            missing_files = []
+            from pathlib import Path
+            cache_base = Path(CACHE_DIR) / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+            for required in required_files:
+                if isinstance(required, (list, tuple)):
+                    if not any((cache_base / filename).exists() for filename in required):
+                        missing_files.append(required)
+                else:
+                    if not (cache_base / required).exists():
+                        missing_files.append(required)
 
-            print("✓ Individual file download completed")
-            return True
+            print(f"Missing after fallback: {missing_files}")
+            return False
         except Exception as e2:
             print(f"✗ Attempt 2 failed: {str(e2)[:200]}")
             return False
@@ -503,7 +542,11 @@ def test_diarization_model():
 
         print("Checking embedding model cache...")
         success &= _check_model_cache("pyannote/wespeaker-voxceleb-resnet34-LM", ["config.yaml", "pytorch_model.bin"])
-
+        print("Checking community PLDA cache...")
+        success &= _check_model_cache(
+            "pyannote/speaker-diarization-community-1",
+            ["config.yaml", "plda/xvec_transform.npz", "plda/plda.npz"],
+        )
         return bool(success)
 
     except Exception as e:
@@ -515,7 +558,8 @@ def main():
     print(f"\n{'='*60}")
     print("Manual HuggingFace Model Download & Test for WhisperX")
     print(f"{'='*60}")
-    print("\nNOTE: No authentication required for WhisperX models.")
+    print("\nNOTE: No authentication required for most WhisperX models.")
+    print("      Use --hf-token if a model requires gated access.")
     print("="*60)
 
     print("\n" + "="*60)
@@ -550,16 +594,25 @@ def main():
     diarization_config_downloaded = download_model_manual(
         "pyannote/speaker-diarization-3.1",
         "Diarization Config",
+        token=args.hf_token,
     )
 
     segmentation_downloaded = download_model_manual(
         "pyannote/segmentation-3.0",
         "Diarization Segmentation Model",
+        token=args.hf_token,
     )
 
     embedding_downloaded = download_model_manual(
         "pyannote/wespeaker-voxceleb-resnet34-LM",
         "Diarization Embedding Model",
+        token=args.hf_token,
+    )
+
+    community_plda_downloaded = download_model_manual(
+        "pyannote/speaker-diarization-community-1",
+        "Diarization Community PLDA",
+        token=args.hf_token,
     )
 
     print("\n" + "="*60)
@@ -571,7 +624,12 @@ def main():
     emotion_ok = test_emotion_recognition_model() if emotion_downloaded else False
     sentiment_ok = test_sentiment_model() if sentiment_downloaded else False
     similarity_ok = test_similarity_model() if similarity_downloaded else False
-    diarization_ok = test_diarization_model() if (diarization_config_downloaded and segmentation_downloaded and embedding_downloaded) else False
+    diarization_ok = test_diarization_model() if (
+        diarization_config_downloaded
+        and segmentation_downloaded
+        and embedding_downloaded
+        and community_plda_downloaded
+    ) else False
 
     print("\n" + "="*60)
     print("FINAL SUMMARY")
@@ -582,6 +640,7 @@ def main():
     print(f"Sentiment Model:           {'✓ SUCCESS' if sentiment_ok else '✗ FAILED'}")
     print(f"Similarity Model:          {'✓ SUCCESS' if similarity_ok else '✗ FAILED'}")
     print(f"Diarization Model:         {'✓ SUCCESS' if diarization_ok else '✗ FAILED'}")
+    print(f"Diarization Community PLDA: {'✓ SUCCESS' if community_plda_downloaded else '✗ FAILED'}")
 
     total_success = sum([whisper_small_ok, alignment_ok, emotion_ok, sentiment_ok, similarity_ok, diarization_ok])
 

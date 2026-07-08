@@ -8,3 +8,6 @@ settings.json
 *.wav
 .venv
 transcription_output*
+Audio files
+*.xlsx
+*.csv

@@ -421,7 +421,7 @@ def main():
     print(f"Reading: {args.input}")
     ext = args.input.replace("'", "").replace('"', "").lower().rsplit(".", 1)[-1]
     if ext in ("xlsx", "xls"):
-        df_raw = pd.read_excel(args.input)
+        df_raw = pd.read_excel(args.input, engine='openpyxl')
         print(f"  {len(df_raw)} rows, {len(df_raw.columns)} columns (Excel)")
     else:
         for encoding in ("utf-8", "latin-1", "cp1252", "utf-8-sig"):

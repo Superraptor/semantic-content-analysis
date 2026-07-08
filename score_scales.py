@@ -6,7 +6,14 @@ labels as column headers) for the "Improving Advanced Cancer Patient-Centered
 Care by Enabling Goals of Care Discussions" study.
 
 Usage:
-    python score_scales.py --input your_redcap_export.csv --output scored_output.csv
+    # Extract only the relevant fields (no scoring yet — good first step):
+    python score_scales.py --input full_export.csv --output extracted.csv --extract-only
+
+    # Score all patients:
+    python score_scales.py --input full_export.csv --output scored.csv
+
+    # Score a specific subset of patient IDs:
+    python score_scales.py --input full_export.csv --output scored.csv --patients 101 102 103
 
 Requirements: pandas
     pip install pandas
@@ -335,22 +342,105 @@ def score_goc_quality(df):
 
 
 # ---------------------------------------------------------------------------
+# FIELD EXTRACTION
+# ---------------------------------------------------------------------------
+
+# The ID column name as it appears in the REDCap export header
+RECORD_ID_LABEL = "Record ID"
+
+# All the field labels the script needs (used for extraction)
+ALL_NEEDED_LABELS = list(COLUMN_LABEL_MAP.keys())
+
+
+def extract_fields(df_raw):
+    """
+    From the full export, keep only:
+      - Record ID column
+      - Every column whose label appears in COLUMN_LABEL_MAP
+    Returns a DataFrame with only those columns (plus Record ID).
+    """
+    keep = []
+
+    # Record ID column
+    if RECORD_ID_LABEL in df_raw.columns:
+        keep.append(RECORD_ID_LABEL)
+    else:
+        # Fallback: first column is usually the ID
+        keep.append(df_raw.columns[0])
+        print(f"  NOTE: '{RECORD_ID_LABEL}' not found; using first column '{df_raw.columns[0]}' as ID")
+
+    # Add every column whose label is in our map (including pandas-suffixed duplicates)
+    for col in df_raw.columns:
+        if col in COLUMN_LABEL_MAP and col not in keep:
+            keep.append(col)
+
+    found    = [c for c in keep if c != keep[0]]
+    missing  = [label for label in ALL_NEEDED_LABELS if label not in df_raw.columns]
+
+    print(f"  Keeping {len(keep)} columns ({len(found)} scale fields + ID)")
+    if missing:
+        print(f"  NOTE: {len(missing)} expected field labels not found in this export:")
+        for m in missing:
+            print(f"    - {m}")
+
+    return df_raw[keep].copy()
+
+
+def filter_patients(df, patient_ids):
+    """
+    Keep only rows whose Record ID is in patient_ids.
+    patient_ids should be a list of strings or ints.
+    """
+    id_col = RECORD_ID_LABEL if RECORD_ID_LABEL in df.columns else df.columns[0]
+    before = len(df)
+    # Try matching as-is first, then as string
+    mask = df[id_col].isin(patient_ids) | df[id_col].astype(str).isin([str(p) for p in patient_ids])
+    df = df[mask].copy()
+    print(f"  Patient filter: {before} → {len(df)} rows ({len(df)} matched of {len(patient_ids)} requested)")
+    return df
+
+
+# ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Score REDCap scales for GoC study.")
-    parser.add_argument("--input",  required=True, help="Path to REDCap CSV export (field-label headers)")
-    parser.add_argument("--output", required=True, help="Path for scored output CSV")
+    parser = argparse.ArgumentParser(description="Extract and score REDCap scales for GoC study.")
+    parser.add_argument("--input",        required=True,
+                        help="Path to REDCap CSV export (field-label headers)")
+    parser.add_argument("--output",       required=True,
+                        help="Path for output CSV")
+    parser.add_argument("--extract-only", action="store_true",
+                        help="Only extract relevant fields; skip scoring. "
+                             "Good first step to inspect the data before running scores.")
+    parser.add_argument("--patients",     nargs="+", default=None,
+                        help="Optional: one or more Record IDs to include (space-separated). "
+                             "If omitted, all rows are processed.")
     args = parser.parse_args()
 
     print(f"Reading: {args.input}")
-    df = pd.read_csv(args.input, low_memory=False)
-    print(f"  {len(df)} rows, {len(df.columns)} columns")
+    df_raw = pd.read_csv(args.input, low_memory=False)
+    print(f"  {len(df_raw)} rows, {len(df_raw.columns)} columns")
 
-    print("Applying column label map...")
+    # Step 1: extract only the fields we need
+    print("\nExtracting relevant fields...")
+    df = extract_fields(df_raw)
+
+    # Step 2 (optional): filter to specific patient IDs
+    if args.patients:
+        print(f"\nFiltering to {len(args.patients)} requested patient ID(s)...")
+        df = filter_patients(df, args.patients)
+
+    if args.extract_only:
+        df.to_csv(args.output, index=False)
+        print(f"\nExtraction complete. Saved {len(df)} rows, {len(df.columns)} columns → {args.output}")
+        return
+
+    # Step 3: rename columns to internal variable names
+    print("\nApplying column label map...")
     df = apply_column_label_map(df)
 
+    # Step 4: score
     out = df.copy()
 
     out["comm_skills_score_baseline"], out["comm_skills_n_valid_baseline"] = \
@@ -359,9 +449,8 @@ def main():
     out["comm_skills_score_post"], out["comm_skills_n_valid_post"] = \
         score_comm_skills(df, COMM_SKILLS_POST)
 
-    out["phq9_score"] = score_phq9(df)
-
-    out["gad7_score"] = score_gad7(df)
+    out["phq9_score"]  = score_phq9(df)
+    out["gad7_score"]  = score_gad7(df)
 
     out["engelberg_qoc_score"], out["engelberg_qoc_general"], out["engelberg_qoc_eol"] = \
         score_engelberg_qoc(df)
@@ -378,9 +467,10 @@ def main():
     print("\nScored variable summary:")
     for col in scored_cols:
         if col in out.columns:
-            n = out[col].notna().sum()
+            n    = out[col].notna().sum()
             mean = out[col].mean()
-            print(f"  {col}: {n} non-missing  |  mean={mean:.2f}" if pd.notna(mean) else f"  {col}: {n} non-missing")
+            print(f"  {col}: {n} non-missing  |  mean={mean:.2f}"
+                  if pd.notna(mean) else f"  {col}: {n} non-missing")
 
     out.to_csv(args.output, index=False)
     print(f"\nSaved to: {args.output}")

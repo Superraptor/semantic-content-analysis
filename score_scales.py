@@ -419,8 +419,16 @@ def main():
     args = parser.parse_args()
 
     print(f"Reading: {args.input}")
-    df_raw = pd.read_csv(args.input, low_memory=False)
-    print(f"  {len(df_raw)} rows, {len(df_raw.columns)} columns")
+    for encoding in ("utf-8", "latin-1", "cp1252", "utf-8-sig"):
+        try:
+            df_raw = pd.read_csv(args.input, low_memory=False, encoding=encoding)
+            print(f"  {len(df_raw)} rows, {len(df_raw.columns)} columns (encoding: {encoding})")
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            print(f"  Encoding {encoding} failed, trying next...")
+    else:
+        raise ValueError("Could not read the CSV with any supported encoding "
+                         "(tried utf-8, latin-1, cp1252, utf-8-sig).")
 
     # Step 1: extract only the fields we need
     print("\nExtracting relevant fields...")

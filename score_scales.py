@@ -416,6 +416,9 @@ def main():
     parser.add_argument("--patients",     nargs="+", default=None,
                         help="Optional: one or more Record IDs to include (space-separated). "
                              "If omitted, all rows are processed.")
+    parser.add_argument("--patients-file", default=None,
+                        help="Optional: path to a plain text file with one Record ID per line. "
+                             "Use this instead of --patients when you have many IDs.")
     args = parser.parse_args()
 
     print(f"Reading: {args.input}")
@@ -440,9 +443,17 @@ def main():
     df = extract_fields(df_raw)
 
     # Step 2 (optional): filter to specific patient IDs
-    if args.patients:
-        print(f"\nFiltering to {len(args.patients)} requested patient ID(s)...")
-        df = filter_patients(df, args.patients)
+    patient_ids = None
+    if args.patients_file:
+        with open(args.patients_file, "r") as f:
+            patient_ids = [line.strip() for line in f if line.strip()]
+        print(f"\nLoaded {len(patient_ids)} patient IDs from {args.patients_file}")
+    elif args.patients:
+        patient_ids = args.patients
+
+    if patient_ids:
+        print(f"\nFiltering to {len(patient_ids)} requested patient ID(s)...")
+        df = filter_patients(df, patient_ids)
 
     if args.extract_only:
         df.to_csv(args.output, index=False)

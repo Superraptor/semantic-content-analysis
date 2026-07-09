@@ -283,6 +283,75 @@ QOC_ALL     = QOC_GENERAL + QOC_EOL
 GOC_QUALITY_ITEM = "qoc17"
 
 
+
+# ---------------------------------------------------------------------------
+# TEXT LABEL TO NUMERIC CONVERSION
+# REDCap exports with field labels use text responses instead of numbers.
+# These maps convert them to the numeric codes the scoring functions expect.
+# ---------------------------------------------------------------------------
+
+# PHQ-9: text → 1-4 (script then subtracts 1 to get 0-3)
+PHQ9_LABEL_MAP = {
+    "not at all":                0,  # maps to 1-1=0
+    "several days":              1,  # maps to 2-1=1
+    "more than half the days":   2,  # maps to 3-1=2
+    "nearly every day":          3,  # maps to 4-1=3
+}
+
+# GAD-7 gateway (f, w): already 0-3 in codebook but may export as text
+GAD7_GATEWAY_LABEL_MAP = {
+    "not at all":                0,
+    "several days":              1,
+    "more than half the days":   2,
+    "nearly every day":          3,
+}
+
+# GAD-7 conditional items (gad71-gad75): text → 1-4 (script subtracts 1)
+GAD7_COND_LABEL_MAP = {
+    "not at all":                0,
+    "several days":              1,
+    "more than half the days":   2,
+    "nearly every day":          3,
+}
+
+# QOC items 52-68: numeric 0-10, usually already numeric but just in case
+# (no text map needed for QOC — they're slider/numeric fields)
+
+
+def convert_text_responses(df):
+    """
+    Convert text label responses to numeric values for PHQ-9 and GAD-7 columns.
+    Operates on the already-renamed dataframe (variable names, not labels).
+    Case-insensitive matching.
+    """
+    def apply_map(series, label_map):
+        lowered = series.astype(str).str.strip().str.lower()
+        return lowered.map(label_map)
+
+    # PHQ-9 English
+    for col in PHQ9_ITEMS + PHQ9_ITEMS_SPAN:
+        if col in df.columns:
+            converted = apply_map(df[col], PHQ9_LABEL_MAP)
+            # Only replace where the map found a match (leave already-numeric alone)
+            numeric = pd.to_numeric(df[col], errors="coerce")
+            df[col] = numeric.combine_first(converted + 1)  # +1 because map gives 0-3, scoring expects 1-4
+
+    # GAD-7 gateway (f, w, f_span, w_span) — map gives 0-3 directly
+    for col in GAD7_GATEWAY_ENG + GAD7_GATEWAY_SPAN:
+        if col in df.columns:
+            converted = apply_map(df[col], GAD7_GATEWAY_LABEL_MAP)
+            numeric = pd.to_numeric(df[col], errors="coerce")
+            df[col] = numeric.combine_first(converted)
+
+    # GAD-7 conditional items — map gives 0-3, scoring expects 1-4
+    for col in GAD7_COND_ENG + GAD7_COND_SPAN:
+        if col in df.columns:
+            converted = apply_map(df[col], GAD7_COND_LABEL_MAP)
+            numeric = pd.to_numeric(df[col], errors="coerce")
+            df[col] = numeric.combine_first(converted + 1)
+
+    return df
+
 # ---------------------------------------------------------------------------
 # SCORING FUNCTIONS
 # ---------------------------------------------------------------------------
@@ -524,6 +593,10 @@ def main():
     # Step 3: rename columns to internal variable names
     print("\nApplying column label map...")
     df = apply_column_label_map(df)
+
+    # Step 3b: convert text responses to numeric
+    print("Converting text responses to numeric...")
+    df = convert_text_responses(df)
 
     # Step 4: score
     out = df.copy()

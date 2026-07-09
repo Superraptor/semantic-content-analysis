@@ -217,6 +217,9 @@ def collapse_by_patient(df):
     """
     id_col = RECORD_ID_LABEL if RECORD_ID_LABEL in df.columns else df.columns[0]
     before = len(df)
+    # Normalize IDs first so '02-028' and '02-028 (Patafio, Giovanna)' collapse together
+    df = df.copy()
+    df[id_col] = normalize_id(df[id_col])
     df = df.groupby(id_col, sort=False).first().reset_index()
     print(f"  Collapsed {before} rows → {len(df)} patients (one row per patient)")
     return df
@@ -402,6 +405,15 @@ def extract_fields(df_raw):
     return df_raw[keep].copy()
 
 
+def normalize_id(id_series):
+    """
+    Strip recruiter name suffixes from Record IDs.
+    e.g. '02-028 (Patafio, Giovanna)' → '02-028'
+         '02-028' → '02-028'
+    """
+    return id_series.astype(str).str.strip().str.extract(r'^(\S+)', expand=False).str.strip()
+
+
 def filter_patients(df, patient_ids, df_all=None):
     """
     Keep only rows whose Record ID is in patient_ids.
@@ -410,22 +422,19 @@ def filter_patients(df, patient_ids, df_all=None):
     id_col = RECORD_ID_LABEL if RECORD_ID_LABEL in df.columns else df.columns[0]
     before = len(df)
     # Try matching as-is first, then as string
-    mask = df[id_col].astype(str).str.strip().isin([str(p).strip() for p in patient_ids])
+    normalized = normalize_id(df[id_col])
+    targets = {str(p).strip() for p in patient_ids}
+    mask = normalized.isin(targets)
     df = df[mask].copy()
-    matched = set(df[id_col].astype(str).str.strip().unique())
+    matched = set(normalize_id(df[id_col]).unique())
     unmatched = [p for p in patient_ids if str(p).strip() not in matched]
     print(f"  Patient filter: {before} → {len(df)} rows ({len(matched)} unique patients matched of {len(patient_ids)} requested)")
     if unmatched:
-        print(f"  WARNING: {len(unmatched)} ID(s) not found in CSV — see unmatched_ids.txt")
-        with open("unmatched_ids.txt", "w") as log:
-            log.write(f"Unmatched IDs ({len(unmatched)} of {len(patient_ids)} requested):\n")
-            for uid in unmatched:
-                log.write(f"  {uid}\n")
-            # Also show a sample of actual IDs in the CSV to help diagnose format issues
-            sample = sorted((df_all if df_all is not None else df)[id_col].astype(str).unique())[:20]
-            log.write(f"\nSample of Record IDs actually in the CSV (first 20):\n")
-            for s in sample:
-                log.write(f"  {s}\n")
+        print(f"  WARNING: {len(unmatched)} ID(s) not found in CSV: {unmatched}")
+        src = (df_all if df_all is not None else df)
+        sample = sorted(normalize_id(src[id_col]).unique())[:30]
+        print(f"  First 30 normalized Record IDs in CSV:")
+        print(f"  {sample}")
     return df
 
 

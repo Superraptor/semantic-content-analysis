@@ -396,7 +396,11 @@ def filter_patients(df, patient_ids):
     # Try matching as-is first, then as string
     mask = df[id_col].isin(patient_ids) | df[id_col].astype(str).isin([str(p) for p in patient_ids])
     df = df[mask].copy()
-    print(f"  Patient filter: {before} → {len(df)} rows ({len(df)} matched of {len(patient_ids)} requested)")
+    matched = set(df[id_col].astype(str).unique())
+    unmatched = [p for p in patient_ids if str(p) not in matched]
+    print(f"  Patient filter: {before} → {len(df)} rows ({len(matched)} unique patients matched of {len(patient_ids)} requested)")
+    if unmatched:
+        print(f"  WARNING: {len(unmatched)} ID(s) not found in CSV: {unmatched}")
     return df
 
 
@@ -419,6 +423,9 @@ def main():
     parser.add_argument("--patients-file", default=None,
                         help="Optional: path to a plain text file with one Record ID per line. "
                              "Use this instead of --patients when you have many IDs.")
+    parser.add_argument("--event", default=None,
+                        help="Optional: filter to a specific REDCap event name (e.g. \'baseline_arm_1\'). "
+                             "Use this if PHQ-9/QOC columns are blank because the data lives in a specific event row.")
     args = parser.parse_args()
 
     print(f"Reading: {args.input}")
@@ -454,6 +461,15 @@ def main():
     if patient_ids:
         print(f"\nFiltering to {len(patient_ids)} requested patient ID(s)...")
         df = filter_patients(df, patient_ids)
+
+    if args.event:
+        event_col = "Event Name" if "Event Name" in df.columns else None
+        if event_col:
+            before = len(df)
+            df = df[df[event_col].astype(str).str.strip() == args.event.strip()].copy()
+            print(f"\nEvent filter '{args.event}': {before} → {len(df)} rows")
+        else:
+            print("\nWARNING: --event specified but no 'Event Name' column found in extracted data.")
 
     if args.extract_only:
         df.to_csv(args.output, index=False)

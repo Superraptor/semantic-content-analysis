@@ -205,6 +205,22 @@ COLUMN_LABEL_MAP = {
 }
 
 
+
+def collapse_by_patient(df):
+    """
+    REDCap longitudinal exports have one row per event per patient.
+    This collapses all rows for each patient into a single row by taking
+    the first non-null value from each column across all their event rows.
+    This means PHQ-9 (from the baseline survey row), comm skills (from the
+    audiotape row), QOC (from the patient survey row) etc. all end up
+    in one row per patient automatically.
+    """
+    id_col = RECORD_ID_LABEL if RECORD_ID_LABEL in df.columns else df.columns[0]
+    before = len(df)
+    df = df.groupby(id_col, sort=False).first().reset_index()
+    print(f"  Collapsed {before} rows → {len(df)} patients (one row per patient)")
+    return df
+
 def apply_column_label_map(df):
     """
     Rename columns using COLUMN_LABEL_MAP.
@@ -386,7 +402,7 @@ def extract_fields(df_raw):
     return df_raw[keep].copy()
 
 
-def filter_patients(df, patient_ids):
+def filter_patients(df, patient_ids, df_all=None):
     """
     Keep only rows whose Record ID is in patient_ids.
     patient_ids should be a list of strings or ints.
@@ -394,13 +410,22 @@ def filter_patients(df, patient_ids):
     id_col = RECORD_ID_LABEL if RECORD_ID_LABEL in df.columns else df.columns[0]
     before = len(df)
     # Try matching as-is first, then as string
-    mask = df[id_col].isin(patient_ids) | df[id_col].astype(str).isin([str(p) for p in patient_ids])
+    mask = df[id_col].astype(str).str.strip().isin([str(p).strip() for p in patient_ids])
     df = df[mask].copy()
-    matched = set(df[id_col].astype(str).unique())
-    unmatched = [p for p in patient_ids if str(p) not in matched]
+    matched = set(df[id_col].astype(str).str.strip().unique())
+    unmatched = [p for p in patient_ids if str(p).strip() not in matched]
     print(f"  Patient filter: {before} → {len(df)} rows ({len(matched)} unique patients matched of {len(patient_ids)} requested)")
     if unmatched:
-        print(f"  WARNING: {len(unmatched)} ID(s) not found in CSV: {unmatched}")
+        print(f"  WARNING: {len(unmatched)} ID(s) not found in CSV — see unmatched_ids.txt")
+        with open("unmatched_ids.txt", "w") as log:
+            log.write(f"Unmatched IDs ({len(unmatched)} of {len(patient_ids)} requested):\n")
+            for uid in unmatched:
+                log.write(f"  {uid}\n")
+            # Also show a sample of actual IDs in the CSV to help diagnose format issues
+            sample = sorted((df_all if df_all is not None else df)[id_col].astype(str).unique())[:20]
+            log.write(f"\nSample of Record IDs actually in the CSV (first 20):\n")
+            for s in sample:
+                log.write(f"  {s}\n")
     return df
 
 
@@ -460,7 +485,7 @@ def main():
 
     if patient_ids:
         print(f"\nFiltering to {len(patient_ids)} requested patient ID(s)...")
-        df = filter_patients(df, patient_ids)
+        df = filter_patients(df, patient_ids, df_all=df_raw)
 
     if args.event:
         event_col = "Event Name" if "Event Name" in df.columns else None
@@ -471,7 +496,18 @@ def main():
         else:
             print("\nWARNING: --event specified but no 'Event Name' column found in extracted data.")
 
+    # Collapse all event rows into one row per patient
+    print("\nCollapsing multi-event rows into one row per patient...")
+    df = collapse_by_patient(df)
+
     if args.extract_only:
+        # When extracting, print a summary of available event names to help user pick the right one
+        if "Event Name" in df.columns:
+            events = df["Event Name"].value_counts()
+            print("\nEvent Name counts in extracted rows:")
+            for evt, cnt in events.items():
+                print(f"  {cnt:4d} rows — '{evt}'")
+        
         df.to_csv(args.output, index=False)
         print(f"\nExtraction complete. Saved {len(df)} rows, {len(df.columns)} columns → {args.output}")
         return

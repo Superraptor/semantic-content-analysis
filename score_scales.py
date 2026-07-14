@@ -480,7 +480,7 @@ def normalize_id(id_series):
     e.g. '02-028 (Patafio, Giovanna)' → '02-028'
          '02-028' → '02-028'
     """
-    return id_series.astype(str).str.strip().str.extract(r'^(\S+)', expand=False).str.strip()
+    return id_series.astype(str).str.replace(r"\s*\(.*$", "", regex=True) .str.strip()
 
 
 def filter_patients(df, patient_ids, df_all=None):

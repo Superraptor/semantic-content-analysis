@@ -154,6 +154,28 @@ COLUMN_LABEL_MAP = {
         "qoc17",
 
     # -----------------------------------------------------------------------
+    # PEPPI — Perceived Efficacy in Patient-Physician Interactions (Q24-28)
+    # Each item rated 1-10. Score = mean of 5 items (range 1-10).
+    # -----------------------------------------------------------------------
+    "24. To know what questions to ask a doctor?":                          "peppi1",
+    "25. To get a doctor to answer all of your questions?":                 "peppi2",
+    "26. To make the most of your visit with a doctor?":                    "peppi3",
+    "27. To get a doctor to take your chief health concern seriously?":     "peppi4",
+    "28. To get a doctor to do something about your chief health concern?": "peppi5",
+
+    # PEPPI — Spanish
+    "24. Para saber qué preguntas hacerle a un médico?":                                              "peppi1span",
+    "24. Para saber quï¿½ preguntas hacerle a un mï¿½dico?":                                          "peppi1span",
+    "25. Para hacer que el médico responda a todas sus preguntas":                                     "peppi2span",
+    "25. Para hacer que el mï¿½dico responda a todas sus preguntas":                                   "peppi2span",
+    "26. Para aprovechar al máximo su visita al médico":                                               "peppi3span",
+    "26. Para aprovechar al mï¿½ximo su visita al mï¿½dico":                                          "peppi3span",
+    "27. Para hacer que un médico tome con seriedad su principal inquietud respecto a su salud":       "peppi4span",
+    "27. Para hacer que un mï¿½dico tome con seriedad su principal inquietud respecto a su salud":     "peppi4span",
+    "28. Para hacer que un médico haga algo acerca de su principal inquietud respecto a su salud":     "peppi5span",
+    "28.Para hacer que un mï¿½dico haga algo acerca de su principal inquietud respecto a su salud":    "peppi5span",
+
+    # -----------------------------------------------------------------------
     # Communication Skills — Reviewer 1 (first occurrence, no pandas suffix)
     # Items that appear identically in both R1 and R2 keep the raw label for R1.
     # Items unique to R1 (slightly different wording from R2) have no suffix.
@@ -239,7 +261,9 @@ def apply_column_label_map(df):
                                                "gad74span", "gad75span",
                                                "phq21span", "phq22span", "phq23span",
                                                "phq24span", "phq25span", "phq26span",
-                                               "phq27span", "phq28span", "phq29span"}
+                                               "phq27span", "phq28span", "phq29span",
+                                               "peppi1span", "peppi2span", "peppi3span",
+                                               "peppi4span", "peppi5span"}
     if missing:
         print(f"  WARNING: {len(missing)} expected columns not found in CSV: {sorted(missing)}")
 
@@ -281,6 +305,9 @@ QOC_GENERAL = [f"qoc{i}" for i in range(1, 10)]    # qoc1–qoc9
 QOC_EOL     = [f"qoc{i}" for i in range(10, 17)]   # qoc10–qoc16
 QOC_ALL     = QOC_GENERAL + QOC_EOL
 GOC_QUALITY_ITEM = "qoc17"
+
+PEPPI_ITEMS      = ["peppi1", "peppi2", "peppi3", "peppi4", "peppi5"]
+PEPPI_ITEMS_SPAN = ["peppi1span", "peppi2span", "peppi3span", "peppi4span", "peppi5span"]
 
 
 
@@ -427,6 +454,23 @@ def score_goc_quality(df):
     raw = pd.to_numeric(df[GOC_QUALITY_ITEM], errors="coerce")
     dichotomized = raw.apply(lambda x: 1 if x >= 9 else (0 if pd.notna(x) else np.nan))
     return raw, dichotomized
+
+
+def score_peppi(df):
+    """
+    PEPPI: mean of 5 items (peppi1-5), each rated 1-10.
+    English or Spanish — whichever items are filled for that patient.
+    Score range: 1-10. Higher = more confident interacting with physician.
+    """
+    def mean_available(cols):
+        available = [c for c in cols if c in df.columns]
+        if not available:
+            return pd.Series([np.nan] * len(df), index=df.index)
+        return df[available].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+
+    eng  = mean_available(PEPPI_ITEMS)
+    span = mean_available(PEPPI_ITEMS_SPAN)
+    return eng.combine_first(span)
 
 
 # ---------------------------------------------------------------------------
@@ -616,11 +660,14 @@ def main():
     out["goc_discussion_quality"], out["goc_discussion_satisfied"] = \
         score_goc_quality(df)
 
+    out["peppi_score"] = score_peppi(df)
+
     scored_cols = [
         "comm_skills_score_baseline", "comm_skills_score_post",
         "phq9_score", "gad7_score",
         "engelberg_qoc_score", "engelberg_qoc_general", "engelberg_qoc_eol",
         "goc_discussion_quality", "goc_discussion_satisfied",
+        "peppi_score",
     ]
     print("\nScored variable summary:")
     for col in scored_cols:

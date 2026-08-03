@@ -20,9 +20,10 @@ history), or via an environment variable (safer, for scripting/automation):
 Optional: stratify by a column (e.g. Site or Cancer Type):
     python make_table.py "/path/to/your/data.xlsx" --groupby "Cancer Type"
 
-Optional: stratify by MULTIPLE columns at once (e.g. Gender AND Race
-combined into cross-tab groups like "Female | White", "Male | Black", etc.):
-    python make_table.py "/path/to/your/data.xlsx" --groupby "Patient Gender,What Is Your Race?"
+Optional: stratify by MULTIPLE columns, each getting its own row-block
+(e.g. Gender's categories, then Race's categories, then Ethnicity's
+categories -- shown separately, not merged into one cross-tab):
+    python make_table.py "/path/to/your/data.xlsx" --groupby "Patient Gender,What Is Your Race?,Are You Hispanic Or Latino?"
 
 WHAT'S INCLUDED
 ---------------
@@ -190,12 +191,12 @@ def clean_race(series: pd.Series, other_series: pd.Series) -> pd.Series:
     return race
 
 
-def build_table(
-    df: pd.DataFrame,
-    groupby_cols: list[str] | None,
-    force_categorical: list[str] | None,
-    force_continuous: list[str] | None,
-) -> TableOne:
+def prepare_data(df: pd.DataFrame) -> tuple[pd.DataFrame, set]:
+    """
+    Clean/derive fields (Age, Race) once, and figure out which raw columns
+    should never appear as their own rows (IDs, free text, raw dates).
+    Returns (work_df, excluded_column_names).
+    """
     core_required = [
         "Patient DOB",
         "Date of Encounter",
@@ -211,17 +212,12 @@ def build_table(
             break
 
     work = df.copy()
-
-    # Age replaces the two raw date columns.
     work["Age, y"] = compute_age(df, cols["Patient DOB"], cols["Date of Encounter"])
-
-    # Race gets cleaned (fold "Other (Specify)" text into "Other").
     work[cols["What Is Your Race?"]] = clean_race(
         df[cols["What Is Your Race?"]],
         df[other_col] if other_col is not None else pd.Series(dtype="string", index=df.index),
     )
 
-    # Drop identifier/free-text/raw-date columns that shouldn't appear as rows.
     exclude_resolved = set()
     for name in EXCLUDE_ALWAYS:
         norm = _normalize(name)
@@ -229,22 +225,16 @@ def build_table(
         if match:
             exclude_resolved.add(match)
 
-    # Combine multiple groupby columns (e.g., Gender + Race) into one
-    # cross-tab column, since tableone only accepts a single groupby column.
-    groupby = None
-    if groupby_cols:
-        if len(groupby_cols) == 1:
-            groupby = groupby_cols[0]
-        else:
-            groupby = " | ".join(groupby_cols)
-            combined = work[groupby_cols[0]].astype("string").str.strip()
-            for extra_col in groupby_cols[1:]:
-                combined = combined + " | " + work[extra_col].astype("string").str.strip()
-            work[groupby] = combined
-            # Exclude the original individual columns from appearing as
-            # separate rows, since they're now folded into the combined group.
-            exclude_resolved.update(groupby_cols)
+    return work, exclude_resolved
 
+
+def build_table(
+    work: pd.DataFrame,
+    exclude_resolved: set,
+    groupby: str | None,
+    force_categorical: list[str] | None,
+    force_continuous: list[str] | None,
+) -> TableOne:
     columns = [c for c in work.columns if c not in exclude_resolved]
     if groupby and groupby not in columns:
         columns.append(groupby)
@@ -277,11 +267,10 @@ def build_table(
     return table
 
 
-def to_wide_csv(table: TableOne, out_path: Path) -> None:
+def transpose_table(table: TableOne) -> pd.DataFrame:
     """
-    Write the table with groups as ROWS and each field/category as its own
-    COLUMN (i.e., transposed from tableone's default layout), matching the
-    orientation Judy wants for the manuscript.
+    Reshape a TableOne result so groups are ROWS and each field/category is
+    its own COLUMN (transposed from tableone's default layout).
     """
     flat = table.tableone.copy()
 
@@ -301,7 +290,7 @@ def to_wide_csv(table: TableOne, out_path: Path) -> None:
 
     transposed = flat.T
     transposed.index.name = "Group"
-    transposed.to_csv(out_path)
+    return transposed
 
 
 def main():
@@ -312,8 +301,11 @@ def main():
         default=None,
         help=(
             "Column(s) to stratify by, e.g. 'Site' or 'Cancer Type'. "
-            "Comma-separate multiple columns to cross-tabulate, e.g. "
-            "'Patient Gender,What Is Your Race?'"
+            "Comma-separate multiple columns (e.g. 'Patient Gender,What Is "
+            "Your Race?,Are You Hispanic Or Latino?') to get a separate "
+            "row-block of results for each one (Gender's categories, then "
+            "Race's categories, then Ethnicity's categories -- each on "
+            "their own rows, not merged together)."
         ),
     )
     parser.add_argument(
@@ -355,13 +347,33 @@ def main():
         [c.strip() for c in args.force_continuous.split(",")] if args.force_continuous else None
     )
 
-    table = build_table(df, groupby_cols, force_categorical, force_continuous)
+    work, exclude_resolved = prepare_data(df)
 
     out_dir = in_path.parent
     csv_path = out_dir / "table1_full.csv"
-    to_wide_csv(table, csv_path)
 
-    print(table.tableone)
+    if not groupby_cols:
+        table = build_table(work, exclude_resolved, None, force_categorical, force_continuous)
+        transposed = transpose_table(table)
+        print(table.tableone)
+    elif len(groupby_cols) == 1:
+        table = build_table(work, exclude_resolved, groupby_cols[0], force_categorical, force_continuous)
+        transposed = transpose_table(table)
+        print(table.tableone)
+    else:
+        # Build one table PER grouping column, so each variable's categories
+        # get their own row-block (e.g. Gender's rows, then Race's rows,
+        # then Ethnicity's rows) instead of a single merged cross-tab.
+        blocks = []
+        for col in groupby_cols:
+            table = build_table(work, exclude_resolved, col, force_categorical, force_continuous)
+            block = transpose_table(table)
+            blocks.append(block)
+            print(f"\n--- Grouped by {col} ---")
+            print(table.tableone)
+        transposed = pd.concat(blocks, axis=0)
+
+    transposed.to_csv(csv_path)
     print(f"\nSaved: {csv_path} (groups as rows, fields as columns)")
 
 

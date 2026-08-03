@@ -20,6 +20,10 @@ history), or via an environment variable (safer, for scripting/automation):
 Optional: stratify by a column (e.g. Site or Cancer Type):
     python make_table.py "/path/to/your/data.xlsx" --groupby "Cancer Type"
 
+Optional: stratify by MULTIPLE columns at once (e.g. Gender AND Race
+combined into cross-tab groups like "Female | White", "Male | Black", etc.):
+    python make_table.py "/path/to/your/data.xlsx" --groupby "Patient Gender,What Is Your Race?"
+
 WHAT'S INCLUDED
 ---------------
 Every column in the file is included EXCEPT:
@@ -188,7 +192,7 @@ def clean_race(series: pd.Series, other_series: pd.Series) -> pd.Series:
 
 def build_table(
     df: pd.DataFrame,
-    groupby: str | None,
+    groupby_cols: list[str] | None,
     force_categorical: list[str] | None,
     force_continuous: list[str] | None,
 ) -> TableOne:
@@ -225,6 +229,22 @@ def build_table(
         if match:
             exclude_resolved.add(match)
 
+    # Combine multiple groupby columns (e.g., Gender + Race) into one
+    # cross-tab column, since tableone only accepts a single groupby column.
+    groupby = None
+    if groupby_cols:
+        if len(groupby_cols) == 1:
+            groupby = groupby_cols[0]
+        else:
+            groupby = " | ".join(groupby_cols)
+            combined = work[groupby_cols[0]].astype("string").str.strip()
+            for extra_col in groupby_cols[1:]:
+                combined = combined + " | " + work[extra_col].astype("string").str.strip()
+            work[groupby] = combined
+            # Exclude the original individual columns from appearing as
+            # separate rows, since they're now folded into the combined group.
+            exclude_resolved.update(groupby_cols)
+
     columns = [c for c in work.columns if c not in exclude_resolved]
     if groupby and groupby not in columns:
         columns.append(groupby)
@@ -257,13 +277,44 @@ def build_table(
     return table
 
 
+def to_wide_csv(table: TableOne, out_path: Path) -> None:
+    """
+    Write the table with groups as ROWS and each field/category as its own
+    COLUMN (i.e., transposed from tableone's default layout), matching the
+    orientation Judy wants for the manuscript.
+    """
+    flat = table.tableone.copy()
+
+    # Flatten the row index: (variable, category) -> "Variable - Category"
+    flat.index = [
+        " - ".join(str(x) for x in idx if x not in ("", None))
+        for idx in flat.index.to_flat_index()
+    ]
+
+    # Flatten the column index if it's a MultiIndex (happens when grouped,
+    # since tableone adds a "Grouped by X" header level above group names).
+    if isinstance(flat.columns, pd.MultiIndex):
+        flat.columns = [
+            " ".join(str(x) for x in col if x not in ("", None)).strip()
+            for col in flat.columns.to_flat_index()
+        ]
+
+    transposed = flat.T
+    transposed.index.name = "Group"
+    transposed.to_csv(out_path)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build a full Table 1 summary (every field).")
     parser.add_argument("input_path", help="Path to the REDCap export .xlsx file")
     parser.add_argument(
         "--groupby",
         default=None,
-        help="Optional column to stratify by, e.g. 'Site' or 'Cancer Type'",
+        help=(
+            "Column(s) to stratify by, e.g. 'Site' or 'Cancer Type'. "
+            "Comma-separate multiple columns to cross-tabulate, e.g. "
+            "'Patient Gender,What Is Your Race?'"
+        ),
     )
     parser.add_argument(
         "--password",
@@ -291,9 +342,11 @@ def main():
 
     df = load_excel(in_path, args.password)
 
+    groupby_cols = None
     if args.groupby:
-        cols = resolve_columns(df, [args.groupby])
-        args.groupby = cols[args.groupby]
+        requested = [c.strip() for c in args.groupby.split(",")]
+        resolved = resolve_columns(df, requested)
+        groupby_cols = [resolved[c] for c in requested]
 
     force_categorical = (
         [c.strip() for c in args.force_categorical.split(",")] if args.force_categorical else None
@@ -302,14 +355,14 @@ def main():
         [c.strip() for c in args.force_continuous.split(",")] if args.force_continuous else None
     )
 
-    table = build_table(df, args.groupby, force_categorical, force_continuous)
+    table = build_table(df, groupby_cols, force_categorical, force_continuous)
 
     out_dir = in_path.parent
     csv_path = out_dir / "table1_full.csv"
-    table.tableone.to_csv(csv_path)
+    to_wide_csv(table, csv_path)
 
     print(table.tableone)
-    print(f"\nSaved: {csv_path}")
+    print(f"\nSaved: {csv_path} (groups as rows, fields as columns)")
 
 
 if __name__ == "__main__":
